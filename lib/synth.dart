@@ -5,7 +5,6 @@
 // See synth_core.dart and DEVIATIONS.md for why synthesis moved to Dart.
 
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_soloud/flutter_soloud.dart';

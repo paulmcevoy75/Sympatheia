@@ -160,7 +160,7 @@ class SynthVoice {
     final samples = max(1.0, glideMs * kSampleRate / 1000);
     glidePerSample = (targetMidi - midi).abs() / samples;
     if (spec.source == SourceType.noise && toneFilter != null &&
-        (spec.noiseQ ?? 0) >= 3.0) {
+        (spec.noiseQ ?? 0.0) >= 3.0) {
       toneFilter!.setBandpass(hzFromMidi(newMidi), spec.noiseQ!);
     }
   }
@@ -270,9 +270,9 @@ class SynthVoice {
             break;
           }
           _grainPos = 0;
-          final grainSamples = max(64.0, (spec.grainMs ?? 30) * kSampleRate / 1000);
+          final grainSamples = max(64.0, (spec.grainMs ?? 30.0) * kSampleRate / 1000);
           _grainInc = 1.0 / grainSamples;
-          final density = max(1.0, spec.grainDensity ?? 20);
+          final density = max(1.0, spec.grainDensity ?? 20.0);
           final meanGap = max(0.0, kSampleRate / density - grainSamples);
           _grainWait = meanGap * (0.5 + rng!.nextDouble());
           // ±50 cent drift per grain
@@ -283,7 +283,7 @@ class SynthVoice {
         modPhase += dt * (spec.fmRatio ?? 3.7);
         if (modPhase >= 1) modPhase -= modPhase.floorToDouble();
         out = w * w *
-            sin(2 * pi * phase + (spec.fmIndex ?? 2) * sin(2 * pi * modPhase));
+            sin(2 * pi * phase + (spec.fmIndex ?? 2.0) * sin(2 * pi * modPhase));
         break;
       case SourceType.noise:
         final double raw;
@@ -336,20 +336,20 @@ class _FxChain {
           // Global chain (spec effects have no target layer). Very low
           // cutoffs intended for the drone alone would gut the pad, so
           // global lowpasses are floored at 1.2 kHz. See DEVIATIONS.md.
-          final fc = max(1200.0, p['cutoffHz'] ?? 4000);
+          final fc = max(1200.0, p['cutoffHz'] ?? 4000.0);
           final q = (p['resonance'] ?? 0.7).clamp(0.5, 2.0);
           _filtersL.add(Biquad.lowpass(fc, q));
           _filtersR.add(Biquad.lowpass(fc, q));
           break;
         case EffectType.highpass:
-          final fc = p['cutoffHz'] ?? 40;
+          final fc = p['cutoffHz'] ?? 40.0;
           final q = (p['resonance'] ?? 0.7).clamp(0.5, 2.0);
           _filtersL.add(Biquad.highpass(fc, q));
           _filtersR.add(Biquad.highpass(fc, q));
           break;
         case EffectType.highShelf:
-          final fc = p['freqHz'] ?? p['frequency'] ?? 6000;
-          final g = p['gainDb'] ?? p['gain'] ?? 0;
+          final fc = p['freqHz'] ?? p['frequency'] ?? 6000.0;
+          final g = p['gainDb'] ?? p['gain'] ?? 0.0;
           _filtersL.add(Biquad.highShelf(fc, g));
           _filtersR.add(Biquad.highShelf(fc, g));
           break;
@@ -359,7 +359,7 @@ class _FxChain {
         case EffectType.chorus:
           chorus = Chorus()
             ..rateHz = p['rateHz'] ?? 0.4
-            ..depthMs = p['depthMs'] ?? 6;
+            ..depthMs = p['depthMs'] ?? 6.0;
           break;
         case EffectType.phaser:
           // Approximated by a slow, deep chorus.
@@ -370,7 +370,7 @@ class _FxChain {
           break;
         case EffectType.delay:
           delay = Delay()
-            ..timeMs = p['timeMs'] ?? 400
+            ..timeMs = p['timeMs'] ?? 400.0
             ..feedback = (p['feedback'] ?? 0.3).clamp(0.0, 0.85)
             ..wet = p['wet'] ?? 0.2;
           break;
@@ -546,7 +546,7 @@ class SynthCore {
     final silenceFactor = _idleGain;
 
     // ─── Drone ─────────────────────────────────────────
-    final droneGain = (s.intensity['drone'] ?? 0) * 0.30 * silenceFactor;
+    final droneGain = (s.intensity['drone'] ?? 0.0) * 0.30 * silenceFactor;
     final droneSpecs = w.voices.where((v) => v.layer == 'drone').toList();
     final drones = _live('drone').toList();
     int di = 0;
@@ -569,7 +569,7 @@ class SynthCore {
     final padSpecs = w.voices.where((v) => v.layer == 'pad').toList();
     final nPad = padSpecs.fold<int>(0, (a, v) => a + v.count);
     final padGain =
-        (s.intensity['chords'] ?? 0) * 0.32 * silenceFactor / sqrt(max(1, nPad));
+        (s.intensity['chords'] ?? 0.0) * 0.32 * silenceFactor / sqrt(max(1, nPad));
     final pads = _live('pad').toList();
     final source = s.padMidi.isNotEmpty
         ? s.padMidi
@@ -606,12 +606,12 @@ class SynthCore {
 
     // ─── Texture ───────────────────────────────────────
     final texSpecs = w.voices.where((v) => v.layer == 'texture').toList();
-    final texGain = (s.intensity['sounds'] ?? 0) * 0.35 * silenceFactor;
+    final texGain = (s.intensity['sounds'] ?? 0.0) * 0.35 * silenceFactor;
     final texs = _live('texture').toList();
     int ti = 0;
     for (final spec in texSpecs) {
       for (int i = 0; i < spec.count; i++) {
-        final pitched = (spec.noiseQ ?? 0) >= 3.0 && source.isNotEmpty;
+        final pitched = (spec.noiseQ ?? 0.0) >= 3.0 && source.isNotEmpty;
         final target = pitched
             ? _fitRange(source[ti % source.length].toDouble(), spec.rangeMidi)
             : ((spec.rangeMidi[0] + spec.rangeMidi[1]) / 2).toDouble();
@@ -722,7 +722,9 @@ class SynthCore {
     if (w == null || w.rhythm.type == RhythmType.none) return;
     final vel = (hit.velocity * _idleGain).clamp(0.0, 1.0);
     if (vel < 0.01) return;
-    final pan = (_pingPong++.isEven ? -1 : 1) * 0.6 * _spatial;
+    final side = _pingPong.isEven ? -1 : 1;
+    _pingPong++;
+    final pan = side * 0.6 * _spatial;
     final note = 60 + hit.pitchPc;
     switch (w.rhythm.type) {
       case RhythmType.pluck:

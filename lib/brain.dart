@@ -538,6 +538,6 @@ class _RecentNote {
 class _Prediction {
   final int predictedPc;
   final DateTime predictedAt;
-  bool wasHit;
-  _Prediction(this.predictedPc, this.predictedAt, {this.wasHit = false});
+  bool wasHit = false;
+  _Prediction(this.predictedPc, this.predictedAt);
 }

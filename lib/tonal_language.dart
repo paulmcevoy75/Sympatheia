@@ -53,6 +53,9 @@ class TonalLanguage implements HarmonicLanguage {
   Scale _committedScale = kMajor;
   DateTime? _committedAt;
 
+  /// When the current key was committed (diagnostics).
+  DateTime? get committedAt => _committedAt;
+
   // Last pad voicing for voice-leading. Absolute MIDI notes, one per
   // pad voice.
   List<int> _lastVoicing = const [];

@@ -10,7 +10,6 @@
 
 import 'dart:async';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
@@ -19,7 +18,6 @@ import 'brain.dart';
 import 'dsp.dart';
 import 'dsp_profile.dart';
 import 'input_router.dart';
-import 'models.dart';
 import 'percussion.dart';
 import 'state.dart';
 import 'synth.dart';

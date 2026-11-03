@@ -7,7 +7,6 @@
 
 import 'dart:async';
 import 'dart:math';
-import 'dart:ui' show FontFeature;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';

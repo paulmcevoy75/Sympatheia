@@ -48,6 +48,9 @@ class AnalysisPipeline {
   double _pitchConfidence = 0;
   double? _lastPitchHz;
 
+  /// Last confident pitch (Hz) or null.
+  double? get lastPitchHz => _lastPitchHz;
+
   // Frame counter
   int _frameCount = 0;
 
