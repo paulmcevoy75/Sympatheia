@@ -13,7 +13,7 @@ void main() {
     test('detects C major from a sustained C–E–G chord', () {
       final p = AnalysisPipeline();
       AnalysisFrame? f;
-      for (int k = 0; k < 24; k++) {
+      for (int k = 0; k < 64; k++) {
         f = p.process(chordFrame([60, 64, 67, 72], 2048, k * 2048),
             DspProfile.chamber, 1.0);
       }
@@ -29,8 +29,8 @@ void main() {
       final p = AnalysisPipeline();
       AnalysisFrame? f;
       int off = 0;
-      for (int k = 0; k < 32; k++) {
-        final chord = (k ~/ 8).isEven ? [57, 60, 64] : [52, 56, 59, 64];
+      for (int k = 0; k < 96; k++) {
+        final chord = (k ~/ 12).isEven ? [57, 60, 64] : [52, 56, 59, 64];
         f = p.process(chordFrame(chord, 2048, off), DspProfile.chamber, 1.0);
         off += 2048;
       }
@@ -74,7 +74,7 @@ void main() {
     test('works at the Whisper tier (4096 window)', () {
       final p = AnalysisPipeline();
       AnalysisFrame? f;
-      for (int k = 0; k < 12; k++) {
+      for (int k = 0; k < 40; k++) {
         f = p.process(chordFrame([62, 66, 69], 4096, k * 4096),
             DspProfile.whisper, 1.0);
       }

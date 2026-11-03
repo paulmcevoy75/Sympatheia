@@ -216,7 +216,7 @@ class AnalysisPipeline {
     // property, chords change every beat or two.
     if (norm > 1e-6) {
       for (int i = 0; i < 12; i++) {
-        _keyChroma[i] = _keyChroma[i] * 0.94 + c[i] * 0.06;
+        _keyChroma[i] = _keyChroma[i] * 0.985 + c[i] * 0.015;
       }
     }
     return List<double>.generate(12, (i) => c[i], growable: false);
