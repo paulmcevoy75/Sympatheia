@@ -59,6 +59,7 @@ class AnalysisPipeline {
 
   // Reusable chroma buffer (returned copy to caller each frame)
   final Float64List _chromaBuf = Float64List(12);
+  final Float64List _keyChroma = Float64List(12);
 
   static const double _sr = 44100.0;
 
@@ -106,7 +107,7 @@ class AnalysisPipeline {
 
     // STAGE 7 — Key detection (every 8th frame)
     if (_frameCount % 8 == 0 || _lastKeyCandidates.isEmpty) {
-      _lastKeyCandidates = _detectKeys(chroma);
+      _lastKeyCandidates = _detectKeys(_keyChroma);
     }
 
     // STAGE 8 — Polyphonic (tier-gated)
@@ -171,25 +172,53 @@ class AnalysisPipeline {
 
   // ─── STAGE 3 — Chroma ───────────────────────────────────────────────
 
+  /// Peak-based chroma (FIX): bins are ~21.5 Hz apart at 2048, so
+  /// assigning raw bins to pitch classes smears every note below ~300 Hz
+  /// into the wrong class (E3 lands in an "F" bin). Instead, find spectral
+  /// peaks, refine their frequency by parabolic interpolation, and credit
+  /// the nearest pitch class, weighted by how close the peak is to it.
   List<double> _computeChroma(int n, int half) {
     final mags = _scratchMagnitudes;
     final c = _chromaBuf;
     c.fillRange(0, 12, 0.0);
+    double maxMag = 0;
     for (int k = 1; k < half; k++) {
-      final f = k * _sr / n;
+      if (mags[k] > maxMag) maxMag = mags[k];
+    }
+    final floor = maxMag * 0.01; // ignore peaks 40 dB down
+    for (int k = 2; k < half - 1; k++) {
+      final b = mags[k];
+      if (b <= floor || b < mags[k - 1] || b < mags[k + 1]) continue;
+      final a = mags[k - 1], cc = mags[k + 1];
+      final denom = a - 2 * b + cc;
+      final delta = denom.abs() < 1e-12 ? 0.0 : 0.5 * (a - cc) / denom;
+      final f = (k + delta) * _sr / n;
       if (f < 60.0 || f > 5000.0) continue;
       final midi = 69.0 + 12.0 * (log(f / 440.0) / ln2);
-      final pc = ((midi.round() % 12) + 12) % 12;
-      c[pc] += mags[k] / sqrt(k.toDouble());
+      final nearest = midi.round();
+      final cents = (midi - nearest).abs(); // 0..0.5 semitone
+      final w = 1.0 - cents * 1.6; // 1 at centre, 0.2 at quarter-tone
+      if (w <= 0) continue;
+      final pc = ((nearest % 12) + 12) % 12;
+      c[pc] += b * w / sqrt(f / 60.0);
     }
-    // L2 normalize
     double sumSq = 0;
-    for (int i = 0; i < 12; i++) sumSq += c[i] * c[i];
+    for (int i = 0; i < 12; i++) {
+      sumSq += c[i] * c[i];
+    }
     final norm = sqrt(sumSq);
     if (norm > 1e-6) {
-      for (int i = 0; i < 12; i++) c[i] /= norm;
+      for (int i = 0; i < 12; i++) {
+        c[i] /= norm;
+      }
     }
-    // Return a fresh List<double> (12 elements — cheap)
+    // Slow average for key detection (~3 s): keys are a long-term
+    // property, chords change every beat or two.
+    if (norm > 1e-6) {
+      for (int i = 0; i < 12; i++) {
+        _keyChroma[i] = _keyChroma[i] * 0.94 + c[i] * 0.06;
+      }
+    }
     return List<double>.generate(12, (i) => c[i], growable: false);
   }
 
@@ -332,6 +361,7 @@ class AnalysisPipeline {
   ];
 
   List<(int, Scale, double)> _detectKeys(List<double> chroma) {
+    // (called with the slow-averaged key chroma)
     final results = <(int, Scale, double)>[];
     final rotated = List<double>.filled(12, 0.0);
 

@@ -40,6 +40,18 @@ void main() {
       expect(top.$1, 9);
     });
 
+    test('chroma puts low notes in the right pitch class', () {
+      for (final m in [40, 45, 52, 55, 57]) {
+        final p = AnalysisPipeline();
+        final f = p.process(chordFrame([m], 2048, 0), DspProfile.chamber, 1.0);
+        var best = 0;
+        for (int i = 1; i < 12; i++) {
+          if (f.chroma[i] > f.chroma[best]) best = i;
+        }
+        expect(best, m % 12, reason: 'MIDI $m (${pitchName(m)})');
+      }
+    });
+
     test('YIN finds 440 Hz', () {
       final p = AnalysisPipeline();
       final x = Float64List(2048);
