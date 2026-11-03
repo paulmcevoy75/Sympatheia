@@ -16,6 +16,14 @@ Every push builds the app on GitHub:
 3. Unzip and run `sympatheia.exe`. Keep the whole folder together (the
    DLLs and `data/` folder are needed).
 
+## Get the Android app
+
+Same run, artifact **Sympatheia-android** → unzip → `app-release.apk`.
+Copy it to the phone and open it (allow "install unknown apps" for your
+file manager or browser when asked). Grant microphone access on first
+launch. Use **wired** headphones: Phase 1 has no echo cancelling, and
+Bluetooth adds latency and takes over the mic.
+
 ## Build it yourself
 
 Requires Flutter (stable) and Visual Studio 2022 with *Desktop development
