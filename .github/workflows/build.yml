@@ -1,0 +1,69 @@
+name: Build & test
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Windows runner (platform folder is not committed)
+        shell: bash
+        run: |
+          flutter create --platforms=windows --project-name sympatheia --org com.paulmcevoy .
+          rm -f test/widget_test.dart
+
+      - name: Get packages
+        run: flutter pub get
+
+      - name: Resolved package versions
+        shell: bash
+        run: flutter pub deps --style=compact | tee deps.txt
+
+      - name: Analyze
+        shell: bash
+        run: |
+          set +e
+          flutter analyze --no-fatal-infos --no-fatal-warnings > analyze.txt 2>&1
+          code=$?
+          cat analyze.txt
+          echo '### flutter analyze' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 80 analyze.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          flutter test --reporter expanded 2>&1 | tee test.txt
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sympatheia-windows
+          path: build/windows/x64/runner/Release/
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: |
+            analyze.txt
+            test.txt
+            deps.txt
+          if-no-files-found: ignore
