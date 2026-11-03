@@ -25,14 +25,20 @@ void main() {
       expect(top.$2.name, anyOf('Major', 'Pentatonic Major'));
     });
 
-    test('detects A minor from A–C–E with G# leading tone mix', () {
+    test('detects A minor from an i–iv–V–i progression', () {
+      const prog = [
+        [57, 60, 64], [57, 60, 64], [50, 57, 62, 65], [52, 56, 59, 62], [57, 60, 64],
+      ];
       final p = AnalysisPipeline();
       AnalysisFrame? f;
       int off = 0;
-      for (int k = 0; k < 96; k++) {
-        final chord = (k ~/ 12).isEven ? [57, 60, 64] : [52, 56, 59, 64];
-        f = p.process(chordFrame(chord, 2048, off), DspProfile.chamber, 1.0);
-        off += 2048;
+      for (int rep = 0; rep < 3; rep++) {
+        for (final chord in prog) {
+          for (int k = 0; k < 10; k++) {
+            f = p.process(chordFrame(chord, 2048, off), DspProfile.chamber, 1.0);
+            off += 2048;
+          }
+        }
       }
       final top = f!.keyCandidates.first;
       // ignore: avoid_print
