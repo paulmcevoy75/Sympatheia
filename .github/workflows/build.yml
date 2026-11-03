@@ -67,3 +67,41 @@ jobs:
             test.txt
             deps.txt
           if-no-files-found: ignore
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Android project (platform folder is not committed)
+        run: |
+          flutter create --platforms=android --project-name sympatheia --org com.paulmcevoy .
+          rm -f test/widget_test.dart
+          M=android/app/src/main/AndroidManifest.xml
+          # Microphone permission + app name
+          sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>\n    <application#' "$M"
+          sed -i 's#android:label="sympatheia"#android:label="Sympatheia"#' "$M"
+          cat "$M"
+
+      - name: Get packages
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sympatheia-android
+          path: build/app/outputs/flutter-apk/app-release.apk

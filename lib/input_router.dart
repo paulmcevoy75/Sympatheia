@@ -5,6 +5,7 @@
 // hum detection (50/60 Hz). Does NOT do HPF/AEC/notches/limiter.
 
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -157,20 +158,30 @@ class InputRouter {
       return false;
     }
 
-    // Retry ladder (bug #14): the error comes from startStream().
+    // Retry ladder (bug #14): the error comes from startStream(). On
+    // Android also fall back from the UNPROCESSED source (API 24+, not
+    // supported by every phone) to the default source.
     Stream<Uint8List>? stream;
-    for (final ch in const [2, 1]) {
-      try {
-        stream = await _recorder.startStream(_makeConfig(ch));
-        _numChannels = ch;
-        debugPrint('InputRouter: started with $ch channel(s)');
-        break;
-      } catch (e) {
-        debugPrint('InputRouter: ${ch}ch failed: $e');
+    outer:
+    for (final source in const [
+      AndroidAudioSource.unprocessed,
+      AndroidAudioSource.voiceRecognition,
+      AndroidAudioSource.defaultSource,
+    ]) {
+      for (final ch in const [2, 1]) {
         try {
-          await _recorder.stop();
-        } catch (_) {}
+          stream = await _recorder.startStream(_makeConfig(ch, source));
+          _numChannels = ch;
+          debugPrint('InputRouter: started with $ch channel(s), $source');
+          break outer;
+        } catch (e) {
+          debugPrint('InputRouter: ${ch}ch/$source failed: $e');
+          try {
+            await _recorder.stop();
+          } catch (_) {}
+        }
       }
+      if (!Platform.isAndroid) break; // source only matters on Android
     }
     if (stream == null) {
       _errorCtrl.add('Could not open the microphone.');
@@ -190,7 +201,8 @@ class InputRouter {
     return true;
   }
 
-  RecordConfig _makeConfig(int channels) => RecordConfig(
+  RecordConfig _makeConfig(int channels, AndroidAudioSource source) =>
+      RecordConfig(
         encoder: AudioEncoder.pcm16bits,
         sampleRate: sampleRate,
         numChannels: channels,
@@ -198,9 +210,7 @@ class InputRouter {
         autoGain: false,
         echoCancel: false,
         noiseSuppress: false,
-        androidConfig: const AndroidRecordConfig(
-          audioSource: AndroidAudioSource.unprocessed,
-        ),
+        androidConfig: AndroidRecordConfig(audioSource: source),
       );
 
   Future<void> stop() async {
