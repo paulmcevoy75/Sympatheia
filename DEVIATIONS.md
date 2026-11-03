@@ -9,9 +9,9 @@ before each phase.
 |---|---|---|
 | `fftea.realFft` returns interleaved `[re0, im0, …]` (bug #11) | Returns `Float64x2List` (complex pairs) | `analysis.dart` reads `.x` / `.y` |
 | `record`: `setInputDevice()`, `InputDevice.isDefault` | Device is passed in `RecordConfig.device`; no `isDefault` | `input_router.dart` keeps the `InputDevice` and restarts the stream; first listed device is treated as default |
-| flutter_soloud `^3.1.0`, `setWaveformFreq` per voice, `filters.bandpass(handle)` | 5.x: waveform frequency and filters are per **source**, no master output tap | **Synthesis moved to Dart** (`synth_core.dart`); `synth.dart` streams it to SoLoud through a released `setBufferStream` (f32le stereo) |
+| flutter_soloud `^3.1.0`, `setWaveformFreq` per voice, `filters.bandpass(handle)` | 4.1.7 (resolved): waveform frequency and filters are per **source**, no master output tap | **Synthesis moved to Dart** (`synth_core.dart`); `synth.dart` streams it to SoLoud through a released `setBufferStream` (f32le stereo) |
 | `flutter_midi_command 0.5` `send(MidiMessage…)` | 1.4: `sendData(Uint8List, {deviceId, timestamp})` | Phase 4 |
-| Package versions pinned with `^` | Workspace can't reach pub.dev | `pubspec.yaml` uses `any` for flutter_soloud and record; CI prints resolved versions in `deps.txt` — pin them once green |
+| Package versions | Resolved by CI on 2026-11-03 | Pinned: flutter_soloud ^4.1.7, record ^7.1.2 (record_windows 2.3.0), fftea ^1.5.0, provider ^6.1.5, shared_preferences ^2.5.6 |
 
 ## Architecture
 
