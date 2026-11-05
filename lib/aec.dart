@@ -91,7 +91,9 @@ class EchoCanceller {
       final e = mic[i] - y;
       resE += e * e;
     }
-    final doubleTalk = resE > 4.0 * echoE + 1e-7;
+    // Only trust the double-talk test once the filter has learned
+    // something; a fresh filter would otherwise never start adapting.
+    final doubleTalk = erleDb > 6.0 && resE > 4.0 * echoE + 1e-7;
     final mu = doubleTalk ? stepSize * 0.03 : stepSize;
     echoE = 0;
     resE = 0;
@@ -122,7 +124,7 @@ class EchoCanceller {
     }
 
     lastEchoRms = sqrt(echoE / n);
-    if (!doubleTalk && micE > 1e-7) {
+    if (resE <= 4.0 * echoE + 1e-7 && micE > 1e-7) {
       final erle = 10 * log(micE / max(resE, 1e-12)) / ln10;
       erleDb = erleDb * 0.9 + erle.clamp(0.0, 40.0) * 0.1;
     }
@@ -154,15 +156,36 @@ class EchoCanceller {
     }
     if (mPow < 1e-7 || rPow < 1e-7) return false;
 
+    // GCC-PHAT: whitened cross-correlation, so tonal music (whose
+    // plain correlation repeats every period) still gives one sharp
+    // peak at the true delay.
+    int nfft = 1;
+    while (nfft < r.length + 1) {
+      nfft <<= 1;
+    }
+    final xr = Float64List(nfft), xi = Float64List(nfft);
+    final yr = Float64List(nfft), yi = Float64List(nfft);
+    for (int j = 0; j < m.length; j++) {
+      xr[j] = m[j];
+    }
+    for (int j = 0; j < r.length; j++) {
+      yr[j] = r[j];
+    }
+    _fft(xr, xi, false);
+    _fft(yr, yi, false);
+    for (int k = 0; k < nfft; k++) {
+      // conj(X) * Y
+      final re = xr[k] * yr[k] + xi[k] * yi[k];
+      final im = xr[k] * yi[k] - xi[k] * yr[k];
+      final mag = sqrt(re * re + im * im) + 1e-12;
+      xr[k] = re / mag;
+      xi[k] = im / mag;
+    }
+    _fft(xr, xi, true);
     final corr = Float64List(lags + 1);
     for (int d = 0; d <= lags; d++) {
-      // mic[j] vs ref[j + lags - d]
-      final off = lags - d;
-      double s = 0;
-      for (int j = 0; j < m.length; j++) {
-        s += m[j] * r[j + off];
-      }
-      corr[d] = s.abs();
+      // c[k] = Σ mic[j]·ref[j+k]; k = lags − d
+      corr[d] = xr[lags - d].abs();
     }
     int best = 0;
     double peak = 0, sum = 0;
@@ -176,7 +199,7 @@ class EchoCanceller {
     final mean = sum / (lags + 1);
     final conf = mean > 0 ? peak / mean : 0.0;
     delayConfidence = conf;
-    if (conf < 4.0) return false;
+    if (conf < 6.0) return false;
 
     final d = best * decim;
     final prev = delaySamples;
@@ -192,6 +215,52 @@ class EchoCanceller {
       delaySamples = next;
     }
     return true;
+  }
+
+  /// In-place radix-2 complex FFT (n must be a power of two).
+  static void _fft(Float64List re, Float64List im, bool inverse) {
+    final n = re.length;
+    for (int i = 1, j = 0; i < n; i++) {
+      int bit = n >> 1;
+      for (; (j & bit) != 0; bit >>= 1) {
+        j ^= bit;
+      }
+      j ^= bit;
+      if (i < j) {
+        var t = re[i];
+        re[i] = re[j];
+        re[j] = t;
+        t = im[i];
+        im[i] = im[j];
+        im[j] = t;
+      }
+    }
+    for (int len = 2; len <= n; len <<= 1) {
+      final ang = 2 * pi / len * (inverse ? 1 : -1);
+      final wr = cos(ang), wi = sin(ang);
+      for (int i = 0; i < n; i += len) {
+        double cr = 1, ci = 0;
+        final half = len >> 1;
+        for (int k = 0; k < half; k++) {
+          final a = i + k, b = a + half;
+          final tr = re[b] * cr - im[b] * ci;
+          final ti = re[b] * ci + im[b] * cr;
+          re[b] = re[a] - tr;
+          im[b] = im[a] - ti;
+          re[a] += tr;
+          im[a] += ti;
+          final ncr = cr * wr - ci * wi;
+          ci = cr * wi + ci * wr;
+          cr = ncr;
+        }
+      }
+    }
+    if (inverse) {
+      for (int i = 0; i < n; i++) {
+        re[i] /= n;
+        im[i] /= n;
+      }
+    }
   }
 
   void _shiftWeights(int s) {
