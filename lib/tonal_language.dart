@@ -89,6 +89,7 @@ class TonalLanguage implements HarmonicLanguage {
   (int, Scale)? _accidentalTarget;
   int _accidentalFrames = 0;
   DateTime? _keyLockUntil;
+  (int, String)? _keyLockFrom; // key we left on accidentals
 
   // ─── UI ────────────────────────────────────────────────────────
   //
@@ -292,7 +293,9 @@ class TonalLanguage implements HarmonicLanguage {
       (int, Scale) candidate, AppState app, DateTime now) {
     // Just switched on accidentals: don't let the slow detector (which
     // still remembers the old key) pull us straight back.
-    if (_keyLockUntil != null && now.isBefore(_keyLockUntil!)) {
+    if (_keyLockUntil != null &&
+        now.isBefore(_keyLockUntil!) &&
+        _keyLockFrom == (candidate.$1, candidate.$2.name)) {
       return (_committedKeyPc, _committedScale);
     }
     _keyHistory.add(
@@ -357,8 +360,13 @@ class TonalLanguage implements HarmonicLanguage {
 
     (int, Scale)? best;
     double bestFit = currentFit + 0.15; // must clearly beat the current key
+    final top = frame.keyCandidates.isNotEmpty ? frame.keyCandidates.first : null;
     for (final k in _nearbyKeys()) {
-      final f = fit(k);
+      var f = fit(k);
+      // Tie-break toward what the slow detector also sees.
+      if (top != null && top.$1 == k.$1 && top.$2.name == k.$2.name) {
+        f += 0.05;
+      }
       if (f > bestFit) {
         bestFit = f;
         best = k;
@@ -382,6 +390,7 @@ class TonalLanguage implements HarmonicLanguage {
     // ~1.4 s at Follow 0, ~0.7 s at Follow 1 (46 ms frames).
     final needed = (30 - 15 * app.follow.clamp(0.0, 1.0)).round();
     if (_accidentalFrames >= needed) {
+      _keyLockFrom = (_committedKeyPc, _committedScale.name);
       _committedKeyPc = best.$1;
       _committedScale = best.$2;
       _committedAt = DateTime.now();
