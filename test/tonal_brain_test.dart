@@ -94,4 +94,35 @@ void main() {
     }
     expect(drone, 0); // drone sits on the tonic
   });
+
+  test('Tonal switches key quickly on sustained accidentals', () {
+    final app = AppState();
+    final lang = TonalLanguage();
+    var ctx = lang.init(app);
+    for (int i = 0; i < 120; i++) {
+      ctx = lang.update(ctx, fakeFrame(chroma: chromaOf([0, 4, 7]), keys: [(0, kMajor, 0.9)]), app);
+    }
+    expect(ctx.displayLabel, 'C Major');
+    // Player moves to D major (F# + C#) while the slow detector still says C.
+    for (int i = 0; i < 60; i++) {
+      ctx = lang.update(ctx, fakeFrame(chroma: chromaOf([2, 6, 9, 1]), keys: [(0, kMajor, 0.9)]), app);
+    }
+    expect(ctx.displayLabel, isNot('C Major'));
+  });
+
+  test('Tonal ignores a brief accidental', () {
+    final app = AppState();
+    final lang = TonalLanguage();
+    var ctx = lang.init(app);
+    for (int i = 0; i < 120; i++) {
+      ctx = lang.update(ctx, fakeFrame(chroma: chromaOf([0, 4, 7]), keys: [(0, kMajor, 0.9)]), app);
+    }
+    for (int i = 0; i < 5; i++) {
+      ctx = lang.update(ctx, fakeFrame(chroma: chromaOf([6]), keys: [(0, kMajor, 0.9)]), app);
+    }
+    for (int i = 0; i < 40; i++) {
+      ctx = lang.update(ctx, fakeFrame(chroma: chromaOf([0, 4, 7]), keys: [(0, kMajor, 0.9)]), app);
+    }
+    expect(ctx.displayLabel, 'C Major');
+  });
 }

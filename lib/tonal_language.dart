@@ -81,6 +81,15 @@ class TonalLanguage implements HarmonicLanguage {
   String _schedScale = '';
   final List<double> _heldChroma = List<double>.filled(12, 0);
 
+  // ─── Fast accidental tracking ──────────────────────────────────
+  // A ~0.7 s chroma average. When notes outside the key keep fitting
+  // one nearby key better than the current one, switch quickly —
+  // the slow key detector would take several seconds.
+  final List<double> _fastChroma = List<double>.filled(12, 0);
+  (int, Scale)? _accidentalTarget;
+  int _accidentalFrames = 0;
+  DateTime? _keyLockUntil;
+
   // ─── UI ────────────────────────────────────────────────────────
   //
   // currentValue is null — the getter has no AppState. The UI reads
@@ -127,6 +136,10 @@ class TonalLanguage implements HarmonicLanguage {
     _chordUntil = null;
     _schedKeyPc = -1;
     _heldChroma.fillRange(0, 12, 0);
+    _fastChroma.fillRange(0, 12, 0);
+    _accidentalTarget = null;
+    _accidentalFrames = 0;
+    _keyLockUntil = null;
 
     final seedVoicing = _seedVoicing(_committedKeyPc, _committedScale);
     _lastVoicing = seedVoicing;
@@ -154,7 +167,8 @@ class TonalLanguage implements HarmonicLanguage {
 
     // 2. Smooth key changes — only in reactive modes.
     if (app.mode == AppMode.listen || app.mode == AppMode.harmonize) {
-      working = _smoothKeyChange(working, app);
+      working = _smoothKeyChange(working, app, frame.timestamp);
+      working = _checkAccidentals(frame, app, working);
     }
 
     // 3. Commit pending modulation if it's been pending > 1 s.
@@ -274,7 +288,13 @@ class TonalLanguage implements HarmonicLanguage {
 
   /// Only commit to a new key after N consecutive consistent
   /// observations.
-  (int, Scale) _smoothKeyChange((int, Scale) candidate, AppState app) {
+  (int, Scale) _smoothKeyChange(
+      (int, Scale) candidate, AppState app, DateTime now) {
+    // Just switched on accidentals: don't let the slow detector (which
+    // still remembers the old key) pull us straight back.
+    if (_keyLockUntil != null && now.isBefore(_keyLockUntil!)) {
+      return (_committedKeyPc, _committedScale);
+    }
     _keyHistory.add(
         _KeyObservation(candidate.$1, candidate.$2, DateTime.now()));
     if (_keyHistory.length > _keyHistoryCap) _keyHistory.removeAt(0);
@@ -305,6 +325,93 @@ class TonalLanguage implements HarmonicLanguage {
     }
 
     return (_committedKeyPc, _committedScale);
+  }
+
+  /// Fast key switch driven by sustained accidentals.
+  (int, Scale) _checkAccidentals(
+      AnalysisFrame frame, AppState app, (int, Scale) working) {
+    if (frame.silent) return working;
+    for (int i = 0; i < 12; i++) {
+      _fastChroma[i] = _fastChroma[i] * 0.94 + frame.chroma[i] * 0.06;
+    }
+    final total = _fastChroma.fold(0.0, (a, b) => a + b);
+    if (total < 1e-6) return working;
+
+    double fit((int, Scale) k) {
+      final pcs = k.$2.pitchClassesFor(k.$1).toSet();
+      double inside = 0;
+      for (int i = 0; i < 12; i++) {
+        if (pcs.contains(i)) inside += _fastChroma[i];
+      }
+      return inside / total - (1 - inside / total);
+    }
+
+    final current = (_committedKeyPc, _committedScale);
+    final currentFit = fit(current);
+    // Little energy outside the key → nothing to do.
+    if (currentFit > 0.8) {
+      _accidentalTarget = null;
+      _accidentalFrames = 0;
+      return working;
+    }
+
+    (int, Scale)? best;
+    double bestFit = currentFit + 0.15; // must clearly beat the current key
+    for (final k in _nearbyKeys()) {
+      final f = fit(k);
+      if (f > bestFit) {
+        bestFit = f;
+        best = k;
+      }
+    }
+    if (best == null) {
+      _accidentalTarget = null;
+      _accidentalFrames = 0;
+      return working;
+    }
+
+    if (_accidentalTarget != null &&
+        _accidentalTarget!.$1 == best.$1 &&
+        _accidentalTarget!.$2.name == best.$2.name) {
+      _accidentalFrames++;
+    } else {
+      _accidentalTarget = best;
+      _accidentalFrames = 1;
+    }
+
+    // ~1.4 s at Follow 0, ~0.7 s at Follow 1 (46 ms frames).
+    final needed = (30 - 15 * app.follow.clamp(0.0, 1.0)).round();
+    if (_accidentalFrames >= needed) {
+      _committedKeyPc = best.$1;
+      _committedScale = best.$2;
+      _committedAt = DateTime.now();
+      _keyHistory.clear();
+      _pendingModulation = null;
+      _pendingModulationAt = null;
+      _accidentalTarget = null;
+      _accidentalFrames = 0;
+      _keyLockUntil = frame.timestamp.add(const Duration(seconds: 5));
+      return best;
+    }
+    return working;
+  }
+
+  List<(int, Scale)> _nearbyKeys() {
+    final root = _committedKeyPc;
+    final isMinor =
+        _committedScale == kNatMinor || _committedScale == kHarmMinor;
+    final rel = isMinor ? 3 : 9;
+    final other = isMinor ? kMajor : kNatMinor;
+    return [
+      (root, other), // parallel
+      ((root + 7) % 12, _committedScale), // dominant
+      ((root + 5) % 12, _committedScale), // subdominant
+      ((root + 7 + rel) % 12, other), // dominant's relative
+      ((root + 5 + rel) % 12, other), // subdominant's relative
+      ((root + 2) % 12, _committedScale), // up a tone
+      ((root + 10) % 12, _committedScale), // down a tone
+      if (isMinor) (root, kHarmMinor),
+    ];
   }
 
   /// Find a nearby key that contains the out-of-context pitch class.
