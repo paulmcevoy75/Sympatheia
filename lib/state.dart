@@ -46,6 +46,15 @@ class AppState extends ChangeNotifier {
   double inputGainDb = 0.0;   // -20..+20
   double midiIntensity = 0.0; // 0 hides MIDI panel
 
+  /// Input sensitivity 0..1. Sets the noise gate (0 = only loud playing
+  /// counts, 1 = very quiet playing counts) and how quickly the key
+  /// detector commits to a new key.
+  double sensitivity = 0.5;
+
+  /// How much the accompaniment follows the notes you play (0 = plays its
+  /// own progression in the key, 1 = chords track your notes closely).
+  double follow = 0.35;
+
   // ─── Toggles ─────────────────────────────────────────────────────
   bool tempoFollow = true;
   bool autoTrimEnabled = true;
@@ -133,6 +142,9 @@ class AppState extends ChangeNotifier {
   AnalysisFrame? latestFrame;
   BrainStatus status = BrainStatus.idle;
   double aecErleDb = 0;
+
+  /// Current noise-gate level (linear RMS) — live readout for the meter.
+  double gateRms = 0.01;
 
   // ─── UI state (not persisted) ────────────────────────────────────
   DateTime lastUiInteraction = DateTime.now();
@@ -270,6 +282,18 @@ class AppState extends ChangeNotifier {
     save();
   }
 
+  void setSensitivity(double v) {
+    sensitivity = v.clamp(0.0, 1.0);
+    notifyListeners();
+    save();
+  }
+
+  void setFollow(double v) {
+    follow = v.clamp(0.0, 1.0);
+    notifyListeners();
+    save();
+  }
+
   void setAntiphonalIntensity(double v) {
     antiphonalIntensity = v.clamp(0.0, 1.0);
     notifyListeners();
@@ -380,6 +404,8 @@ class AppState extends ChangeNotifier {
       antiphonalIntensity = (j['antiphonalIntensity'] as num).toDouble();
       inputGainDb = (j['inputGainDb'] as num).toDouble();
       midiIntensity = (j['midiIntensity'] as num).toDouble();
+      sensitivity = (j['sensitivity'] as num?)?.toDouble() ?? 0.5;
+      follow = (j['follow'] as num?)?.toDouble() ?? 0.35;
 
       tempoFollow = j['tempoFollow'] as bool;
       autoTrimEnabled = j['autoTrimEnabled'] as bool;
@@ -492,6 +518,8 @@ class AppState extends ChangeNotifier {
         'antiphonalIntensity': antiphonalIntensity,
         'inputGainDb': inputGainDb,
         'midiIntensity': midiIntensity,
+        'sensitivity': sensitivity,
+        'follow': follow,
         'tempoFollow': tempoFollow,
         'autoTrimEnabled': autoTrimEnabled,
         'couplingGuardEnabled': couplingGuardEnabled,

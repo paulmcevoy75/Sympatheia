@@ -72,8 +72,9 @@ class AnalysisPipeline {
   AnalysisFrame process(
     Float64List samples,
     DspProfile profile,
-    double analysisConfidence,
-  ) {
+    double analysisConfidence, {
+    double gateRms = 0.01,
+  }) {
     // STAGE 0 — Resize if tier changed
     if (profile.fftWindow != _fftSize) {
       _resize(profile.fftWindow);
@@ -84,6 +85,11 @@ class AnalysisPipeline {
     final half = n ~/ 2;
     final frameMs = 1000.0 * n / _sr;
 
+    // Noise gate (FIX for "hunting notes in silence"): below the gate the
+    // frame is treated as silence — no pitch, no onsets, no key evidence.
+    final rms = _computeRms(samples);
+    final gated = rms < gateRms;
+
     // STAGE 1 — DC block + periodic Hann
     _applyDcBlockAndHann(samples, n);
 
@@ -91,16 +97,23 @@ class AnalysisPipeline {
     _computeMagnitudes(n, half);
 
     // STAGE 3 — Chroma (writes to _chromaBuf)
-    final chroma = _computeChroma(n, half);
+    final chroma = gated
+        ? List<double>.filled(12, 0.0)
+        : _computeChroma(n, half);
 
     // STAGE 4 — Onsets (three signals)
     final onsetResult = _computeOnsets(half, frameMs);
-    final double percussiveOnset = onsetResult.percussiveOnset;
-    final double percussiveConfidence = onsetResult.percussiveConfidence;
+    final double percussiveOnset = gated ? 0.0 : onsetResult.percussiveOnset;
+    final double percussiveConfidence =
+        gated ? 0.0 : onsetResult.percussiveConfidence;
     final double lowBandFlux = onsetResult.lowBandFlux;
 
     // STAGE 5 — YIN pitch
-    final pitchHz = _yin(samples);
+    double? pitchHz = _yin(samples);
+    if (gated) {
+      pitchHz = null;
+      _pitchConfidence = 0;
+    }
 
     // STAGE 6 — Tempo
     _updateTempo(percussiveOnset, frameMs);
@@ -111,13 +124,12 @@ class AnalysisPipeline {
     }
 
     // STAGE 8 — Polyphonic (tier-gated)
-    final detectedNotes = profile.polyphonicPitch
+    final detectedNotes = profile.polyphonicPitch && !gated
         ? _detectPolyphonic(half)
         : const <DetectedNote>[];
 
-    // STAGE 9 — Silence + RMS
-    final rms = _computeRms(samples);
-    final silent = _updateSilence(rms);
+    // STAGE 9 — Silence (rms computed at the top for the gate)
+    final silent = _updateSilence(rms, gateRms);
 
     // STAGE 10 — Assemble
     return AnalysisFrame(
@@ -476,8 +488,8 @@ class AnalysisPipeline {
     return sqrt(sum / x.length).clamp(0.0, 1.0);
   }
 
-  bool _updateSilence(double rms) {
-    if (rms > 0.01) {
+  bool _updateSilence(double rms, double gateRms) {
+    if (rms > gateRms) {
       _lastSignalTime = DateTime.now();
       return false;
     }

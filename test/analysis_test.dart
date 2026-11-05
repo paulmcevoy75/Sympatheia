@@ -10,6 +10,17 @@ import 'helpers.dart';
 
 void main() {
   group('AnalysisPipeline', () {
+    test('noise gate: quiet input produces no notes or key change', () {
+      final p = AnalysisPipeline();
+      AnalysisFrame? f;
+      for (int k = 0; k < 32; k++) {
+        f = p.process(chordFrame([61, 65, 68], 2048, k * 2048, amp: 0.002),
+            DspProfile.chamber, 1.0, gateRms: 0.01);
+      }
+      expect(f!.chroma.every((v) => v == 0), isTrue);
+      expect(f.pitchHz, isNull);
+    });
+
     test('detects C major from a sustained C–E–G chord', () {
       final p = AnalysisPipeline();
       AnalysisFrame? f;

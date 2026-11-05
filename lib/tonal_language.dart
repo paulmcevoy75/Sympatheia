@@ -42,8 +42,11 @@ class TonalLanguage implements HarmonicLanguage {
   // Key detection smoothing. Requires N consecutive same-key
   // observations before committing to a change.
   final List<_KeyObservation> _keyHistory = [];
-  static const int _keyHistoryCap = 20;
-  static const int _stableObservations = 8; // ~370 ms at 46 ms frames
+  static const int _keyHistoryCap = 80;
+  // Frames of agreement needed before a key change commits. Scales
+  // with Sensitivity: ~60 frames (~3 s) at 0, ~15 (~0.7 s) at 1.
+  int _stableObservationsFor(AppState app) =>
+      (60 - 45 * app.sensitivity.clamp(0.0, 1.0)).round();
   static const double _minKeyScore = 0.55;
 
   // Current committed key — drives the pad/bass chord. May differ
@@ -64,6 +67,19 @@ class TonalLanguage implements HarmonicLanguage {
   // update() once it's been pending for > 1000 ms.
   (int, Scale)? _pendingModulation;
   DateTime? _pendingModulationAt;
+
+  // ─── Chord scheduler ───────────────────────────────────────────
+  // The accompaniment plays its own diatonic progression: each chord
+  // is held for 4–8 beats, then the next is chosen at random using
+  // functional-harmony transition weights. The player's chroma
+  // (averaged over the hold) nudges the choice, scaled by Follow.
+  final Random _rng = Random();
+  Chord? _chord;
+  int _chordDegree = 0;
+  DateTime? _chordUntil;
+  int _schedKeyPc = -1;
+  String _schedScale = '';
+  final List<double> _heldChroma = List<double>.filled(12, 0);
 
   // ─── UI ────────────────────────────────────────────────────────
   //
@@ -107,6 +123,10 @@ class TonalLanguage implements HarmonicLanguage {
     _committedKeyPc = app.manualKeyPc;
     _committedScale = app.manualScale;
     _committedAt = DateTime.now();
+    _chord = null;
+    _chordUntil = null;
+    _schedKeyPc = -1;
+    _heldChroma.fillRange(0, 12, 0);
 
     final seedVoicing = _seedVoicing(_committedKeyPc, _committedScale);
     _lastVoicing = seedVoicing;
@@ -134,13 +154,13 @@ class TonalLanguage implements HarmonicLanguage {
 
     // 2. Smooth key changes — only in reactive modes.
     if (app.mode == AppMode.listen || app.mode == AppMode.harmonize) {
-      working = _smoothKeyChange(working);
+      working = _smoothKeyChange(working, app);
     }
 
     // 3. Commit pending modulation if it's been pending > 1 s.
     if (_pendingModulation != null && _pendingModulationAt != null) {
       final elapsed = DateTime.now().difference(_pendingModulationAt!);
-      if (elapsed.inMilliseconds > 1000) {
+      if (elapsed.inMilliseconds > 2000) {
         _committedKeyPc = _pendingModulation!.$1;
         _committedScale = _pendingModulation!.$2;
         _committedAt = DateTime.now();
@@ -152,15 +172,23 @@ class TonalLanguage implements HarmonicLanguage {
       }
     }
 
-    // 4. Pick chord from chroma.
-    final chord = _pickChord(frame.chroma, working.$1, working.$2);
+    // 4. Chord scheduler (Progression mode follows the user's steps).
+    final Chord chord;
+    if (app.mode == AppMode.progression) {
+      chord = app.progression.current;
+      if (chord != _chord) {
+        _chord = chord;
+        _lastVoicing = _voiceLeadPad(chord, _lastVoicing);
+      }
+    } else {
+      chord = _scheduleChord(frame, app, working.$1, working.$2);
+    }
 
-    // 5. Voice-lead the pad from the previous voicing.
-    final padPitches = _voiceLeadPad(chord, _lastVoicing);
-    _lastVoicing = padPitches;
+    // 5. Pad voicing only changes when the chord changes.
+    final padPitches = _lastVoicing;
 
-    // 6. Bass note one octave below the chord root.
-    final bassPitches = [_bassMidiFor(chord.rootPc)];
+    // 6. Drone stays on the key tonic — a stable floor, not a chase.
+    final bassPitches = [_bassMidiFor(working.$1)];
 
     // 7. Tonal stability from frame key detection confidence.
     final stability = _computeTonalStability(frame, working);
@@ -187,14 +215,16 @@ class TonalLanguage implements HarmonicLanguage {
     Duration sustainedFor,
     AppState app,
   ) {
-    // < 350 ms: passing tone. Do nothing.
-    if (sustainedFor.inMilliseconds < 350) {
+    // Short out-of-key notes are passing tones. How long counts as
+    // "short" depends on Follow: ~1.5 s at 0, ~0.4 s at 1.
+    final passMs = (1500 - 1100 * app.follow.clamp(0.0, 1.0)).round();
+    if (sustainedFor.inMilliseconds < passMs) {
       return current;
     }
 
-    // 350–1500 ms: try to find a nearby key that contains the pitch
-    // class. If found, set pending modulation.
-    if (sustainedFor.inMilliseconds < 1500) {
+    // Then: try to find a nearby key that contains the pitch class.
+    // If found, set pending modulation.
+    if (sustainedFor.inMilliseconds < passMs + 2500) {
       final alternate = _findAlternateKeyContaining(pitchClass);
       if (alternate != null) {
         // Only replace an existing pending modulation if the new
@@ -244,7 +274,7 @@ class TonalLanguage implements HarmonicLanguage {
 
   /// Only commit to a new key after N consecutive consistent
   /// observations.
-  (int, Scale) _smoothKeyChange((int, Scale) candidate) {
+  (int, Scale) _smoothKeyChange((int, Scale) candidate, AppState app) {
     _keyHistory.add(
         _KeyObservation(candidate.$1, candidate.$2, DateTime.now()));
     if (_keyHistory.length > _keyHistoryCap) _keyHistory.removeAt(0);
@@ -267,7 +297,7 @@ class TonalLanguage implements HarmonicLanguage {
       }
     }
 
-    if (consecutive >= _stableObservations) {
+    if (consecutive >= _stableObservationsFor(app)) {
       _committedKeyPc = candidate.$1;
       _committedScale = candidate.$2;
       _committedAt = DateTime.now();
@@ -308,43 +338,132 @@ class TonalLanguage implements HarmonicLanguage {
 
   // ─── Internal: chord selection ─────────────────────────────────
 
-  Chord _pickChord(List<double> chroma, int keyPc, Scale scale) {
-    Chord best = Chord(keyPc, ChordQuality.maj);
-    double bestScore = -1e9;
-    final scalePcs = scale.pitchClassesFor(keyPc);
+  // Functional transition weights between scale degrees (0 = I).
+  static const List<List<double>> _transitions = [
+    //  I    ii   iii  IV   V    vi   vii
+    [0.0, 1.0, 0.5, 2.0, 2.0, 1.5, 0.2], // from I
+    [0.4, 0.0, 0.3, 0.8, 2.5, 0.5, 0.6], // from ii
+    [0.4, 0.5, 0.0, 1.5, 0.5, 2.0, 0.1], // from iii
+    [1.8, 1.0, 0.3, 0.0, 2.2, 0.6, 0.4], // from IV
+    [2.5, 0.3, 0.4, 0.8, 0.0, 1.5, 0.2], // from V
+    [0.6, 1.8, 0.4, 1.8, 1.2, 0.0, 0.1], // from vi
+    [2.5, 0.2, 0.8, 0.3, 0.6, 0.6, 0.0], // from vii
+  ];
 
-    for (final rootPc in scalePcs) {
-      for (final quality in ChordQuality.values) {
-        final chord = Chord(rootPc, quality);
-        double score = 0.0;
+  Chord _scheduleChord(
+      AnalysisFrame frame, AppState app, int keyPc, Scale scale) {
+    final degrees = _degreePcs(keyPc, scale);
+    final now = frame.timestamp;
 
-        // Chroma energy over the chord's pitch classes.
-        for (final pc in chord.pitchClasses()) {
-          score += chroma[pc];
+    // Key changed (or first run): restart on the tonic.
+    if (keyPc != _schedKeyPc || scale.name != _schedScale || _chord == null) {
+      _schedKeyPc = keyPc;
+      _schedScale = scale.name;
+      _setChord(0, _triadOn(degrees, 0), frame, now);
+      return _chord!;
+    }
+
+    // Average what the player plays while this chord is held.
+    if (!frame.silent) {
+      for (int i = 0; i < 12; i++) {
+        _heldChroma[i] = _heldChroma[i] * 0.97 + frame.chroma[i] * 0.03;
+      }
+    }
+
+    // During silence the progression pauses rather than wandering.
+    if (frame.silent) {
+      _chordUntil = _chordUntil?.add(const Duration(milliseconds: 46));
+      return _chord!;
+    }
+    if (_chordUntil != null && now.isBefore(_chordUntil!)) return _chord!;
+
+    // Time to move: weighted random pick of the next degree.
+    final n = degrees.length;
+    final follow = app.follow.clamp(0.0, 1.0);
+    final maxChroma = _heldChroma.reduce(max);
+    final weights = <double>[];
+    for (int d = 0; d < n; d++) {
+      if (d == _chordDegree) {
+        weights.add(0);
+        continue;
+      }
+      double w = (n == 7 && _chordDegree < 7)
+          ? _transitions[_chordDegree][d]
+          : 1.0;
+      if (maxChroma > 1e-6) {
+        double fit = 0;
+        for (final pc in _triadOn(degrees, d).pitchClasses()) {
+          fit += _heldChroma[pc] / maxChroma;
         }
-
-        // Penalty for chord tones outside the scale.
-        for (final pc in chord.pitchClasses()) {
-          if (!scalePcs.contains(pc)) score -= 0.4;
-        }
-
-        // Prior: prefer tonic, subdominant, dominant.
-        if (rootPc == keyPc) score += 0.20;
-        if ((rootPc - keyPc + 12) % 12 == 5) score += 0.12;
-        if ((rootPc - keyPc + 12) % 12 == 7) score += 0.12;
-
-        // Prior: mild preference for triads over 7ths.
-        if (quality == ChordQuality.maj || quality == ChordQuality.min) {
-          score += 0.08;
-        }
-
-        if (score > bestScore) {
-          bestScore = score;
-          best = chord;
+        w *= 1.0 + follow * 4.0 * (fit / 3.0);
+      }
+      weights.add(w);
+    }
+    final total = weights.fold(0.0, (a, b) => a + b);
+    int next = 0;
+    if (total > 0) {
+      double r = _rng.nextDouble() * total;
+      for (int d = 0; d < n; d++) {
+        r -= weights[d];
+        if (r <= 0) {
+          next = d;
+          break;
         }
       }
     }
-    return best;
+    _setChord(next, _triadOn(degrees, next), frame, now);
+    return _chord!;
+  }
+
+  void _setChord(int degree, Chord chord, AnalysisFrame frame, DateTime now) {
+    _chordDegree = degree;
+    if (chord != _chord) {
+      _lastVoicing = _voiceLeadPad(chord, _lastVoicing);
+    }
+    _chord = chord;
+    final bpm = (frame.tempoBpm ?? 80).clamp(50.0, 160.0);
+    final beats = 4 + _rng.nextInt(5); // 4–8 beats
+    _chordUntil =
+        now.add(Duration(milliseconds: (beats * 60000 / bpm).round()));
+    for (int i = 0; i < 12; i++) {
+      _heldChroma[i] *= 0.3;
+    }
+  }
+
+  /// Scale pitch classes in degree order starting at the tonic.
+  List<int> _degreePcs(int keyPc, Scale scale) {
+    final rel = scale
+        .pitchClassesFor(keyPc)
+        .map((pc) => (pc - keyPc + 12) % 12)
+        .toSet()
+        .toList()
+      ..sort();
+    if (rel.isEmpty) return [keyPc];
+    return rel.map((r) => (r + keyPc) % 12).toList();
+  }
+
+  /// Triad built by stacking scale thirds on a degree.
+  Chord _triadOn(List<int> degrees, int d) {
+    final n = degrees.length;
+    final root = degrees[d % n];
+    if (n < 5) return Chord(root, ChordQuality.sus2);
+    final third = (degrees[(d + 2) % n] - root + 12) % 12;
+    final fifth = (degrees[(d + 4) % n] - root + 12) % 12;
+    ChordQuality q;
+    if (third == 4 && fifth == 7) {
+      q = ChordQuality.maj;
+    } else if (third == 3 && fifth == 7) {
+      q = ChordQuality.min;
+    } else if (third == 3 && fifth == 6) {
+      q = ChordQuality.dim;
+    } else if (third == 4 && fifth == 8) {
+      q = ChordQuality.aug;
+    } else if (fifth == 7) {
+      q = third <= 2 ? ChordQuality.sus2 : ChordQuality.sus4;
+    } else {
+      q = ChordQuality.sus2;
+    }
+    return Chord(root, q);
   }
 
   // ─── Internal: voicing ─────────────────────────────────────────

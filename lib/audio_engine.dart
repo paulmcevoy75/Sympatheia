@@ -32,6 +32,7 @@ class AudioEngine {
   final SoloudSynthEngine synth = SoloudSynthEngine();
 
   double _lastSynthRms = 0.0; // bug #15: previous frame's level
+  double _noiseFloor = 0.002; // adaptive input noise floor (linear RMS)
   double _hpPrevX = 0.0, _hpPrevY = 0.0; // bug #21
   List<Biquad> _mains = const [];
 
@@ -129,11 +130,24 @@ class AudioEngine {
       x[i] = softClip(x[i]);
     }
 
-    // Step 4: confidence from previous frame's output level (§8.4).
-    final conf = _computeAnalysisConfidence(_rms(x), profile);
+    // Step 4: noise gate. Track the room's noise floor (falls fast, rises
+    // slowly) and gate at the higher of "floor + 10 dB" and the
+    // Sensitivity threshold (-24 dBFS at 0 … -60 dBFS at 1).
+    final level = _rms(x);
+    if (level < _noiseFloor) {
+      _noiseFloor = _noiseFloor * 0.7 + level * 0.3;
+    } else {
+      _noiseFloor = min(_noiseFloor * 1.002, 0.05);
+    }
+    final threshDb = -24.0 - 36.0 * app.sensitivity;
+    final gate = max(pow(10, threshDb / 20).toDouble(), _noiseFloor * 3.2);
+    app.gateRms = gate;
 
-    // Step 5: analysis.
-    final frame = analysis.process(x, profile, conf);
+    // Step 5: confidence from previous frame's output level (§8.4).
+    final conf = _computeAnalysisConfidence(level, profile);
+
+    // Step 6: analysis.
+    final frame = analysis.process(x, profile, conf, gateRms: gate);
 
     // Step 6: percussion.
     final frameMs = 1000.0 * profile.fftWindow / InputRouter.sampleRate;
