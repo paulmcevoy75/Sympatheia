@@ -4,25 +4,22 @@ An ambient accompaniment engine: it listens to you play (through a mic or
 a line input), works out your key and tempo, and plays along — drones,
 chords, rhythm and textures — in one of 17 sound worlds.
 
-**Status: Phase 1** (Tonal language, key following, all sound worlds load,
-no echo cancelling yet — use headphones).
+**Status: Phase 2** (Tonal language with its own progression, key
+following, Sensitivity/Follow controls, distinct sound worlds, echo
+cancelling for speakers).
 
-## Get the Windows app
+## Download
 
-Every push builds the app on GitHub:
+Latest build: **Releases → latest**
+(https://github.com/paulmcevoy75/Sympatheia/releases/tag/latest)
 
-1. Open the repository's **Actions** tab → latest **Build & test** run.
-2. Download the **Sympatheia-windows** artifact (a zip).
-3. Unzip and run `sympatheia.exe`. Keep the whole folder together (the
-   DLLs and `data/` folder are needed).
+* Android: tap `Sympatheia.apk` (allow "install unknown apps"), grant
+  microphone access.
+* Windows: download `Sympatheia-windows.zip`, unzip, run
+  `sympatheia.exe` (keep the folder together).
 
-## Get the Android app
-
-Same run, artifact **Sympatheia-android** → unzip → `app-release.apk`.
-Copy it to the phone and open it (allow "install unknown apps" for your
-file manager or browser when asked). Grant microphone access on first
-launch. Use **wired** headphones: Phase 1 has no echo cancelling, and
-Bluetooth adds latency and takes over the mic.
+Under **Input**, choose **Speakers** (echo cancelling on) or
+**Headphones**. Bluetooth headphones work, with ~0.2 s extra delay.
 
 ## Build it yourself
 

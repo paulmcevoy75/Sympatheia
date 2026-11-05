@@ -102,6 +102,41 @@ class SoloudSynthEngine {
     }
   }
 
+  bool _paused = false;
+
+  /// App went to the background: stop pulling audio (Android throttles
+  /// timers there, which caused underruns and glitches).
+  void pause() {
+    if (!_initialized || _paused) return;
+    _paused = true;
+    _pump?.cancel();
+    _pump = null;
+    final h = _handle;
+    if (h != null) {
+      try {
+        _sl.setPause(h, true);
+      } catch (e) {
+        debugPrint('Synth: pause failed: $e');
+      }
+    }
+    _wall.stop();
+  }
+
+  void resume() {
+    if (!_initialized || !_paused) return;
+    _paused = false;
+    final h = _handle;
+    if (h != null) {
+      try {
+        _sl.setPause(h, false);
+      } catch (e) {
+        debugPrint('Synth: resume failed: $e');
+      }
+    }
+    _wall.start();
+    _pump ??= Timer.periodic(const Duration(milliseconds: 8), (_) => _tick());
+  }
+
   void playHelloPad() => core.playHelloPad();
 
   void apply(

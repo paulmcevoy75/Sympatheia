@@ -22,10 +22,9 @@ before each phase.
   saturation, chorus, phaser≈chorus, delay, Freeverb-style reverb) run on
   the mix. The AEC reference (Phase 5) is the exact output, read from a
   2 s mono ring indexed by output-sample number.
-* **Effects are global per world.** The spec has no target layer on
-  `EffectSpec`; lowpasses meant only for a drone (e.g. 250 Hz in
-  `clumsy_kind_giant`) would gut the pad, so global lowpasses are floored
-  at 1.2 kHz.
+* **Per-layer effects (Phase 2).** `EffectSpec` gained an optional
+  `layer`; filters with a layer run per voice (e.g. the 250 Hz drone LP
+  in `clumsy_kind_giant`). Global lowpasses are still floored at 1.2 kHz.
 * **Rhythm clock lives in the synth.** The brain re-emits the whole
   `rhythmSchedule` every frame; the spec synth re-scheduled hits relative
   to "now" each frame, which machine-gunned beat-0 hits ~21 times/s. The
@@ -64,3 +63,27 @@ engine + MIDI (Phase 4), native plugin (v1.1).
   `notifyListeners()` from outside.
 * Latency readout shows "unknown" (bug #47).
 * Level meter is dB-scaled.
+
+## Phase 2 (Nov 5, 2026)
+
+* **Tonal plays its own progression** — chords held 4–8 beats, next chord
+  by weighted random functional transitions, nudged by the player
+  (Follow). Drone on the key tonic. Fast key switch on sustained
+  accidentals. Not in the spec; from Paul's first test.
+* **Noise gate + Sensitivity / Follow** controls (not in the spec).
+* **Stray plucks removed**: ambient worlds (washy, choirs, singing child,
+  musical sea, giant) have rhythm `none`; ice crystals and broken glass
+  ring soft FM bells (`RhythmType.bell`, new).
+* **VoiceSpec additions**: `vowelCycleSec` (choirs/sea/wind morph
+  ah–oh–oo–eh), `swellSec` (sea/wind swells), `pitchDropSemis/Ms`
+  (cajón boom), `pluckBrightness` (softer rhythm plucks).
+* **Cajón**: pitch-dropping bass tone, slap = noise crack + body tone,
+  attack softened per profile (`cajonAttackSofteningMs`).
+* **AEC** (`aec.dart`): bulk delay by decimated cross-correlation
+  (0–500 ms, ~1/s) + NLMS with Geigel-style double-talk slow-down. Taps
+  capped at 512 on mobile / 1024 on desktop (the spec's 2048–4096 is too
+  heavy in Dart). Feedback guard: low analysis confidence freezes key
+  changes. No narrow-band feedback suppressor: the synth never plays the
+  mic signal, so there is no howl loop to suppress.
+* **App lifecycle**: on Android/iOS the output pauses and the mic is
+  released when the app is hidden, and both resume on return.

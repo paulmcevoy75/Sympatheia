@@ -53,6 +53,15 @@ class SynthVoice {
   double _ksPrev = 0;
   double _ksDecay = 0.996;
 
+  // Phase 2: per-layer insert filters (from world effects with a layer)
+  List<Biquad> inserts = const [];
+
+  // Phase 2: swell, vowel cycling, pitch drop
+  double _swellPhase = 0, _swellInc = 0;
+  double _vowelPhase = 0, _vowelInc = 0;
+  int _vowelCounter = 0;
+  double _dropEnv = 0, _dropCoef = 0;
+
   // filters
   List<Biquad> formants = const [];
   List<double> formantGains = const [];
@@ -95,6 +104,54 @@ class SynthVoice {
     vibPhase = rng!.nextDouble();
     _setupFilters();
     if (spec.source == SourceType.pluck) _strike();
+    if (spec.swellSec > 0) {
+      // ±20 % per voice so a group never swells in lockstep.
+      final period = spec.swellSec * (0.8 + 0.4 * rng!.nextDouble());
+      _swellInc = 1.0 / (period * kSampleRate);
+      _swellPhase = rng!.nextDouble();
+    }
+    if (spec.vowelCycleSec > 0 && spec.source == SourceType.formant) {
+      final period = spec.vowelCycleSec * (0.85 + 0.3 * rng!.nextDouble());
+      _vowelInc = 256.0 / (period * kSampleRate);
+      _vowelPhase = rng!.nextDouble();
+    }
+    if (spec.pitchDropSemis != 0) {
+      _dropEnv = 1.0;
+      _dropCoef = exp(-1.0 / max(1.0, spec.pitchDropMs * kSampleRate / 1000));
+    }
+  }
+
+  // Relative vowel shapes (f1, f2, f3 multipliers) cycled around the
+  // spec's formant: ah → oh → oo → eh.
+  static const List<List<double>> _vowels = [
+    [1.0, 1.0, 1.0],
+    [0.70, 0.72, 0.97],
+    [0.50, 0.62, 0.92],
+    [0.62, 1.45, 0.93],
+  ];
+
+  void _updateVowel() {
+    final f = (spec.formants != null && spec.formants!.isNotEmpty)
+        ? spec.formants!.first
+        : const Formant(700, 1200, 2600);
+    final List<List<double>> shapes = (spec.formants != null &&
+            spec.formants!.length > 1)
+        ? [
+            for (final g in spec.formants!)
+              [g.f1 / f.f1, g.f2 / f.f2, g.f3 / f.f3]
+          ]
+        : _vowels;
+    final pos = _vowelPhase * shapes.length;
+    final i0 = pos.floor() % shapes.length;
+    final i1 = (i0 + 1) % shapes.length;
+    final fr = pos - pos.floorToDouble();
+    final w = 0.5 - 0.5 * cos(pi * fr); // smooth crossfade
+    final base = [f.f1, f.f2, f.f3];
+    for (int k = 0; k < 3 && k < formants.length; k++) {
+      final m = shapes[i0][k] * (1 - w) + shapes[i1][k] * w;
+      final fc = base[k] * m;
+      formants[k].setBandpass(fc, (fc / max(40.0, f.bwHz)).clamp(2.0, 30.0));
+    }
   }
 
   double get hz => hzFromMidi(midi) * detuneRatio;
@@ -141,6 +198,25 @@ class SynthVoice {
     final r = rng ?? Random();
     for (int i = 0; i < period; i++) {
       buf[i] = r.nextDouble() * 2 - 1;
+    }
+    // Softer excitation = rounder, less "plinky" attack.
+    final b = spec.pluckBrightness.clamp(0.05, 1.0);
+    if (b < 1.0) {
+      for (int pass = 0; pass < 2; pass++) {
+        double y = 0;
+        for (int i = 0; i < period; i++) {
+          y += b * (buf[i] - y);
+          buf[i] = y;
+        }
+      }
+      // Restore level lost to filtering.
+      double peak = 1e-9;
+      for (final v in buf) {
+        peak = max(peak, v.abs());
+      }
+      for (int i = 0; i < period; i++) {
+        buf[i] /= peak;
+      }
     }
     _ks = buf;
     _ksIdx = 0;
@@ -209,6 +285,16 @@ class SynthVoice {
       }
 
       double f = hzFromMidiFast(midi) * detuneRatio;
+      if (_dropEnv > 1e-4) {
+        f *= exp(spec.pitchDropSemis * _dropEnv * 0.05776226504666211);
+        _dropEnv *= _dropCoef;
+      }
+      if (_vowelInc > 0 && ++_vowelCounter >= 256) {
+        _vowelCounter = 0;
+        _vowelPhase += _vowelInc;
+        if (_vowelPhase >= 1) _vowelPhase -= 1;
+        _updateVowel();
+      }
       if (vibDepth > 0) {
         vibPhase += vibRate;
         if (vibPhase >= 1) vibPhase -= 1;
@@ -216,7 +302,16 @@ class SynthVoice {
       }
       final dt = f / kSampleRate;
 
-      final s = _osc(dt) * env * gain;
+      double s = _osc(dt);
+      for (final ins in inserts) {
+        s = ins.process(s);
+      }
+      s *= env * gain;
+      if (_swellInc > 0) {
+        _swellPhase += _swellInc;
+        if (_swellPhase >= 1) _swellPhase -= 1;
+        s *= 0.3 + 0.7 * (0.5 - 0.5 * cos(2 * pi * _swellPhase));
+      }
       l[i] += s * cl;
       r[i] += s * cr;
     }
@@ -330,6 +425,7 @@ class _FxChain {
 
   _FxChain(SoundWorld w) {
     for (final e in w.effects) {
+      if (e.layer != null) continue; // per-layer inserts live on voices
       final p = e.params;
       switch (e.type) {
         case EffectType.lowpass:
@@ -680,8 +776,12 @@ class SynthCore {
 
   SynthVoice _spawn(VoiceSpec spec, String layer, double midi, double gain,
       double detuneCents,
-      {double pan = 0, bool oneShot = false, int? maxAgeSamples}) {
+      {double pan = 0,
+      bool oneShot = false,
+      int? maxAgeSamples,
+      double? attackMs}) {
     final v = SynthVoice(
+      attackMs: attackMs,
       layer: layer,
       spec: spec,
       worldId: _worldId ?? '',
@@ -693,6 +793,30 @@ class SynthCore {
       detuneCents: detuneCents,
       maxAge: maxAgeSamples ?? (1 << 30),
     );
+    final w = _world;
+    if (w != null) {
+      final ins = <Biquad>[];
+      for (final e in w.effects) {
+        if (e.layer != layer) continue;
+        final p = e.params;
+        final q = (p['resonance'] ?? 0.7).clamp(0.5, 8.0);
+        switch (e.type) {
+          case EffectType.lowpass:
+            ins.add(Biquad.lowpass(p['cutoffHz'] ?? 1000.0, q));
+            break;
+          case EffectType.highpass:
+            ins.add(Biquad.highpass(p['cutoffHz'] ?? 40.0, q));
+            break;
+          case EffectType.highShelf:
+            ins.add(Biquad.highShelf(
+                p['freqHz'] ?? 6000.0, p['gainDb'] ?? 0.0));
+            break;
+          default:
+            break;
+        }
+      }
+      if (ins.isNotEmpty) v.inserts = ins;
+    }
     _voices.add(v);
     return v;
   }
@@ -701,14 +825,24 @@ class SynthCore {
 
   static const _pluckSpec = VoiceSpec(
       layer: 'rhythm', count: 1, source: SourceType.pluck,
-      rangeMidi: [48, 84], attackMs: 2, releaseMs: 500);
+      rangeMidi: [48, 84], attackMs: 4, releaseMs: 700,
+      pluckBrightness: 0.35);
+  static const _bellSpec = VoiceSpec(
+      layer: 'rhythm', count: 1, source: SourceType.fm,
+      rangeMidi: [60, 96], attackMs: 3, releaseMs: 2600,
+      fmRatio: 3.5, fmIndex: 2.2);
+  static const _cajonBodySpec = VoiceSpec(
+      layer: 'rhythm', count: 1, source: SourceType.sine,
+      rangeMidi: [40, 60], attackMs: 1, releaseMs: 90,
+      pitchDropSemis: 5, pitchDropMs: 25);
   static const _clickSpec = VoiceSpec(
       layer: 'rhythm', count: 1, source: SourceType.noise,
       rangeMidi: [79, 79], attackMs: 1, releaseMs: 40,
       noiseColor: NoiseColor.white, noiseQ: 6);
   static const _kickSpec = VoiceSpec(
       layer: 'rhythm', count: 1, source: SourceType.sine,
-      rangeMidi: [28, 28], attackMs: 2, releaseMs: 180);
+      rangeMidi: [28, 40], attackMs: 2, releaseMs: 200,
+      pitchDropSemis: 14, pitchDropMs: 35);
   static const _slapSpec = VoiceSpec(
       layer: 'rhythm', count: 1, source: SourceType.noise,
       rangeMidi: [90, 90], attackMs: 1, releaseMs: 110,
@@ -728,8 +862,14 @@ class SynthCore {
     final note = 60 + hit.pitchPc;
     switch (w.rhythm.type) {
       case RhythmType.pluck:
-        _spawn(_pluckSpec, 'rhythm', note.toDouble(), vel * 0.5, 0,
-            pan: pan, oneShot: true, maxAgeSamples: (0.5 * kSampleRate).round());
+        _spawn(_pluckSpec, 'rhythm', note.toDouble(), vel * 0.35, 0,
+            pan: pan, oneShot: true, maxAgeSamples: (0.7 * kSampleRate).round());
+        break;
+      case RhythmType.bell:
+        // Soft bell on a chord tone, an octave up; random placement.
+        _spawn(_bellSpec, 'rhythm', (72 + hit.pitchPc).toDouble(), vel * 0.18, 0,
+            pan: (_rng.nextDouble() * 2 - 1) * 0.7 * _spatial,
+            oneShot: true, maxAgeSamples: (2.6 * kSampleRate).round());
         break;
       case RhythmType.woodblock:
         _spawn(_clickSpec, 'rhythm', 79, vel * 0.6, 0,
@@ -739,14 +879,21 @@ class SynthCore {
         // Velocity → kit piece (§11.3 notes): >0.7 kick+slap, >0.35 slap,
         // otherwise a palmas triple-burst.
         final strength = hit.velocity.clamp(0.0, 1.0);
+        final soft = _profile.cajonAttackSofteningMs.toDouble();
         if (strength > 0.35) {
           if (strength > 0.7) {
-            _spawn(_kickSpec, 'rhythm', 28, vel * 0.9, 0,
-                oneShot: true, maxAgeSamples: (0.18 * kSampleRate).round());
+            // Bass tone: pitch-dropping sine (the cajón's low "boom").
+            _spawn(_kickSpec, 'rhythm', 33, vel * 0.9, 0,
+                oneShot: true, attackMs: soft,
+                maxAgeSamples: (0.2 * kSampleRate).round());
           }
-          _spawn(_slapSpec, 'rhythm', 90, vel * 0.5, 0,
-              pan: pan, oneShot: true,
+          // Slap: bright noise crack + short wooden body tone.
+          _spawn(_slapSpec, 'rhythm', 90, vel * 0.45, 0,
+              pan: pan, oneShot: true, attackMs: soft,
               maxAgeSamples: (0.11 * kSampleRate).round());
+          _spawn(_cajonBodySpec, 'rhythm', 52, vel * 0.3, 0,
+              pan: pan, oneShot: true, attackMs: soft,
+              maxAgeSamples: (0.09 * kSampleRate).round());
         } else {
           for (final ms in const [0, 12, 25]) {
             _harmonyQueue.add((

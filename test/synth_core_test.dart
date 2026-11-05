@@ -115,4 +115,23 @@ void main() {
     final energy = ref.fold<double>(0, (a, v) => a + v * v);
     expect(energy, greaterThan(0));
   });
+
+  test('ambient worlds have no stray rhythm plucks; bells ring in ice', () {
+    for (final id in ['musical_sea', 'washy_reverb', 'singing_child',
+        'eastern_european_choir', 'russian_choir', 'clumsy_kind_giant']) {
+      final core = SynthCore();
+      core.apply(stateFor(id), DspProfile.chamber,
+          master: 0.5, reverb: 0.45, spatial: 0.7, bpm: 100);
+      renderSeconds(core, 3);
+      final hits = core.drainNoteEvents().where((e) => e.layerId == 'rhythm');
+      expect(hits, isEmpty, reason: id);
+    }
+    final ice = SynthCore();
+    ice.apply(stateFor('ice_crystals'), DspProfile.chamber,
+        master: 0.5, reverb: 0.45, spatial: 0.7, bpm: 100);
+    final (peak, _) = renderSeconds(ice, 3);
+    expect(ice.drainNoteEvents().where((e) => e.layerId == 'rhythm'),
+        isNotEmpty);
+    expect(peak, lessThanOrEqualTo(1.0));
+  });
 }

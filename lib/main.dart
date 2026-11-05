@@ -5,6 +5,7 @@
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -39,6 +40,17 @@ Future<void> main() async {
       child: const SympatheiaApp(),
     ),
   );
+
+  // Mobile: pause audio + mic in the background, resume on return.
+  // Desktop keeps playing when another window has focus.
+  final mobile = defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+  if (mobile) {
+    AppLifecycleListener(
+      onHide: engine.suspend,
+      onShow: engine.resume,
+    );
+  }
 
   unawaited(engine.start().catchError((Object e) {
     debugPrint('AudioEngine.start failed: $e');

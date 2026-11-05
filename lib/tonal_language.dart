@@ -167,7 +167,12 @@ class TonalLanguage implements HarmonicLanguage {
     var working = _resolveWorkingKey(frame, app);
 
     // 2. Smooth key changes — only in reactive modes.
-    if (app.mode == AppMode.listen || app.mode == AppMode.harmonize) {
+    // Feedback guard: when the mic mostly hears our own output, don't
+    // let it steer the key (it would follow itself).
+    if ((app.mode == AppMode.listen || app.mode == AppMode.harmonize) &&
+        frame.analysisConfidence < 0.3) {
+      working = (_committedKeyPc, _committedScale);
+    } else if (app.mode == AppMode.listen || app.mode == AppMode.harmonize) {
       working = _smoothKeyChange(working, app, frame.timestamp);
       working = _checkAccidentals(frame, app, working);
     }

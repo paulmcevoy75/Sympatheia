@@ -603,12 +603,27 @@ class _InputPanelState extends State<_InputPanel> {
           valueText: '${app.inputGainDb >= 0 ? '+' : ''}${app.inputGainDb.toStringAsFixed(0)} dB',
           onChanged: (v) => app.setInputGainDb(v * 40 - 20),
         ),
-        const SizedBox(height: 4),
-        const Text(
-          'Phase 1 has no echo cancelling yet: use headphones, or the app '
-          'will hear itself.',
-          style: kLabelStyle,
+        const SizedBox(height: 8),
+        const Text('You hear Sympatheia through', style: kLabelStyle),
+        _PanelRadio<CouplingMode>(
+          value: CouplingMode.openAir,
+          groupValue: app.couplingMode,
+          label: 'Speakers (echo cancelling on)',
+          onChanged: (_) => app.setCouplingMode(CouplingMode.openAir),
         ),
+        _PanelRadio<CouplingMode>(
+          value: CouplingMode.direct,
+          groupValue: app.couplingMode,
+          label: 'Headphones',
+          onChanged: (_) => app.setCouplingMode(CouplingMode.direct),
+        ),
+        if (app.couplingMode == CouplingMode.openAir)
+          Text(
+            app.aecErleDb > 0.5
+                ? 'Echo removed: ${app.aecErleDb.toStringAsFixed(0)} dB'
+                : 'Echo cancelling: listening for the speakers…',
+            style: kLabelStyle,
+          ),
       ],
     );
   }

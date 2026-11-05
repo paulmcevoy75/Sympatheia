@@ -64,6 +64,23 @@ class VoiceSpec {
   final NoiseColor? noiseColor;
   final double? noiseQ; // for bandpass noise
 
+  // Phase 2 additions
+  /// Formant voices: seconds per full cycle through the vowels
+  /// (spec.formants if it lists more than one, else a/o/u/e). 0 = off.
+  final double vowelCycleSec;
+
+  /// Slow amplitude swell period in seconds (waves, breath). 0 = off.
+  final double swellSec;
+
+  /// Pitch envelope: start this many semitones above the note and fall
+  /// to it over [pitchDropMs] (drum bodies, kicks).
+  final double pitchDropSemis;
+  final double pitchDropMs;
+
+  /// Pluck excitation brightness 0..1 (1 = white-noise burst; lower =
+  /// softer, rounder attack).
+  final double pluckBrightness;
+
   const VoiceSpec({
     required this.layer,
     required this.count,
@@ -81,6 +98,11 @@ class VoiceSpec {
     this.grainDensity,
     this.noiseColor,
     this.noiseQ,
+    this.vowelCycleSec = 0,
+    this.swellSec = 0,
+    this.pitchDropSemis = 0,
+    this.pitchDropMs = 40,
+    this.pluckBrightness = 1.0,
   });
 }
 
@@ -100,7 +122,12 @@ enum EffectType {
 class EffectSpec {
   final EffectType type;
   final Map<String, double> params;
-  const EffectSpec(this.type, this.params);
+
+  /// Phase 2: apply only to one layer ('drone', 'pad', 'texture', …).
+  /// Null = the whole world mix. Only filters (lowpass/highpass/
+  /// highShelf) may target a layer.
+  final String? layer;
+  const EffectSpec(this.type, this.params, {this.layer});
 }
 
 // ─── Rhythm character ───────────────────────────────────────────────
@@ -111,6 +138,7 @@ enum RhythmType {
   woodblock,
   cajon,
   palmas,
+  bell, // Phase 2: soft FM bell strikes on chord tones
   brass,
 }
 
@@ -225,7 +253,7 @@ final tameImpalaFan = SoundWorld(
   ],
   effects: const [
     // Drone chain: heavy LP
-    EffectSpec(EffectType.lowpass, {'cutoffHz': 800, 'resonance': 0.7}),
+    EffectSpec(EffectType.lowpass, {'cutoffHz': 800, 'resonance': 0.7}, layer: 'drone'),
     // Pad chain: chorus + phaser + wow
     EffectSpec(EffectType.chorus, {'rateHz': 0.4, 'depthMs': 8}),
     EffectSpec(EffectType.phaser, {'rateHz': 0.08, 'stages': 4}),
@@ -304,7 +332,7 @@ final washyReverb = SoundWorld(
   effects: const [
     EffectSpec(EffectType.reverb, {'room': 0.98, 'wet': 0.85, 'damp': 0.3}),
   ],
-  rhythm: const RhythmCharacter(RhythmType.pluck, density: 0.2),
+  rhythm: const RhythmCharacter(RhythmType.none), // Phase 2: no stray plucks
   spatial: const SpatialSpec(
     defaultPattern: AntiphonalPattern.wave,
     defaultIntensity: 0.75,
@@ -368,6 +396,7 @@ final earthSinging = SoundWorld(
       vibratoCents: 4,
       detuneCents: 8,
       formants: [Formant(250, 500, 900)],
+      vowelCycleSec: 20,
     ),
     // Pink noise texture — the "planet bed"
     VoiceSpec(
@@ -383,7 +412,7 @@ final earthSinging = SoundWorld(
   ],
   effects: const [
     // Broad LP on the whole chain — everything is filtered dark
-    EffectSpec(EffectType.lowpass, {'cutoffHz': 300, 'resonance': 2.0}),
+    EffectSpec(EffectType.lowpass, {'cutoffHz': 300, 'resonance': 2.0}, layer: 'texture'),
     // HPF removes DC and infrasonic rumble below the audible range
     EffectSpec(EffectType.highpass, {'cutoffHz': 20, 'resonance': 0.7}),
     EffectSpec(EffectType.reverb, {'room': 0.95, 'wet': 0.55, 'damp': 0.3}),
@@ -458,6 +487,7 @@ final easternEuropeanChoir = SoundWorld(
       vibratoCents: 10,
       detuneCents: 6,
       formants: [Formant(800, 1150, 2900)],
+      vowelCycleSec: 14,
     ),
   ],
   effects: const [
@@ -465,7 +495,7 @@ final easternEuropeanChoir = SoundWorld(
     EffectSpec(EffectType.chorus, {'rateHz': 0.3, 'depthMs': 5}),
     EffectSpec(EffectType.reverb, {'room': 0.7, 'wet': 0.4, 'damp': 0.3}),
   ],
-  rhythm: const RhythmCharacter(RhythmType.pluck, density: 0.3),
+  rhythm: const RhythmCharacter(RhythmType.none), // Phase 2: no stray plucks
   spatial: const SpatialSpec(
     defaultPattern: AntiphonalPattern.callResponse,
     defaultIntensity: 0.85,
@@ -536,14 +566,14 @@ final clumsyKindGiant = SoundWorld(
   ],
   effects: const [
     // Heavy LP on the drone — kill the harsh saw harmonics
-    EffectSpec(EffectType.lowpass, {'cutoffHz': 250, 'resonance': 0.8}),
+    EffectSpec(EffectType.lowpass, {'cutoffHz': 250, 'resonance': 0.8}, layer: 'drone'),
     // Lighter LP on the pad — keep some presence
-    EffectSpec(EffectType.lowpass, {'cutoffHz': 1200, 'resonance': 0.7}),
+    EffectSpec(EffectType.lowpass, {'cutoffHz': 1200, 'resonance': 0.7}, layer: 'pad'),
     // Gentle saturation for weight
     EffectSpec(EffectType.saturation, {'drive': 1.4}),
     EffectSpec(EffectType.reverb, {'room': 0.6, 'wet': 0.35, 'damp': 0.3}),
   ],
-  rhythm: const RhythmCharacter(RhythmType.pluck, density: 0.4),
+  rhythm: const RhythmCharacter(RhythmType.none), // Phase 2: no stray plucks
   spatial: const SpatialSpec(
     defaultPattern: AntiphonalPattern.wave,
     defaultIntensity: 0.5,
@@ -604,6 +634,7 @@ final singingChild = SoundWorld(
       vibratoCents: 7,
       detuneCents: 0, // single voice — no detune
       formants: [Formant(1000, 1500, 3500)],
+      vowelCycleSec: 10,
     ),
   ],
   effects: const [
@@ -612,7 +643,7 @@ final singingChild = SoundWorld(
     // Gentle HPF — remove any low rumble; the child has no chest voice
     EffectSpec(EffectType.highpass, {'cutoffHz': 300, 'resonance': 0.7}),
   ],
-  rhythm: const RhythmCharacter(RhythmType.pluck, density: 0.15),
+  rhythm: const RhythmCharacter(RhythmType.none), // Phase 2: no stray plucks
   spatial: const SpatialSpec(
     defaultPattern: AntiphonalPattern.cluster,
     defaultIntensity: 0.15,
@@ -681,6 +712,8 @@ final musicalSea = SoundWorld(
       vibratoCents: 3,
       detuneCents: 5,
       formants: [Formant(500, 1000, 2500)],
+      vowelCycleSec: 16,
+      swellSec: 11,
     ),
     // The sea itself — 4 resonant noise bands that follow the chord
     VoiceSpec(
@@ -692,16 +725,17 @@ final musicalSea = SoundWorld(
       releaseMs: 5000,
       noiseColor: NoiseColor.pink,
       noiseQ: 20.0, // resonant — this is the "singing" filter
+      swellSec: 7,
     ),
   ],
   effects: const [
     // Drone LP
-    EffectSpec(EffectType.lowpass, {'cutoffHz': 300, 'resonance': 0.7}),
+    EffectSpec(EffectType.lowpass, {'cutoffHz': 300, 'resonance': 0.7}, layer: 'drone'),
     // HPF removes sub-rumble before reverb
     EffectSpec(EffectType.highpass, {'cutoffHz': 20, 'resonance': 0.7}),
     EffectSpec(EffectType.reverb, {'room': 0.8, 'wet': 0.5, 'damp': 0.3}),
   ],
-  rhythm: const RhythmCharacter(RhythmType.pluck, density: 0.2),
+  rhythm: const RhythmCharacter(RhythmType.none), // Phase 2: no stray plucks
   spatial: const SpatialSpec(
     defaultPattern: AntiphonalPattern.wave,
     defaultIntensity: 0.7,
@@ -758,6 +792,7 @@ final musicalWind = SoundWorld(
       vibratoCents: 0,
       detuneCents: 3,
       formants: [Formant(600, 1100, 2700)],
+      vowelCycleSec: 22,
     ),
     // High-Q noise bands — the whistle
     VoiceSpec(
@@ -769,6 +804,7 @@ final musicalWind = SoundWorld(
       releaseMs: 6000,
       noiseColor: NoiseColor.white,
       noiseQ: 30.0, // narrow — this is the whistle
+      swellSec: 9,
     ),
   ],
   effects: const [
@@ -858,7 +894,7 @@ final brokenGlass = SoundWorld(
     // Slight high shelf boost — glass is *bright*
     EffectSpec(EffectType.highShelf, {'freqHz': 6000, 'gainDb': 3.0}),
   ],
-  rhythm: const RhythmCharacter(RhythmType.pluck, density: 0.7),
+  rhythm: const RhythmCharacter(RhythmType.bell, density: 0.4),
   spatial: const SpatialSpec(
     defaultPattern: AntiphonalPattern.alternate,
     defaultIntensity: 0.9,
@@ -944,7 +980,7 @@ final iceCrystals = SoundWorld(
     // HPF — cold air, no low rumble
     EffectSpec(EffectType.highpass, {'cutoffHz': 200, 'resonance': 0.7}),
   ],
-  rhythm: const RhythmCharacter(RhythmType.none),
+  rhythm: const RhythmCharacter(RhythmType.bell, density: 0.25),
   spatial: const SpatialSpec(
     defaultPattern: AntiphonalPattern.alternate,
     defaultIntensity: 0.55,
@@ -1013,6 +1049,7 @@ final russianChoir = SoundWorld(
       vibratoCents: 5,
       detuneCents: 4,
       formants: [Formant(350, 700, 2000)],
+      vowelCycleSec: 26,
     ),
     // Three male formant pad voices (tenor/baritone)
     VoiceSpec(
@@ -1026,6 +1063,7 @@ final russianChoir = SoundWorld(
       vibratoCents: 5,
       detuneCents: 4,
       formants: [Formant(500, 900, 2400)],
+      vowelCycleSec: 18,
     ),
   ],
   effects: const [
@@ -1036,7 +1074,7 @@ final russianChoir = SoundWorld(
     // Gentle saturation — the "chest" of the bass voices
     EffectSpec(EffectType.saturation, {'drive': 1.2}),
   ],
-  rhythm: const RhythmCharacter(RhythmType.pluck, density: 0.25),
+  rhythm: const RhythmCharacter(RhythmType.none), // Phase 2: no stray plucks
   spatial: const SpatialSpec(
     defaultPattern: AntiphonalPattern.cluster,
     defaultIntensity: 0.4,
@@ -1122,7 +1160,7 @@ final banjoChorus = SoundWorld(
     // Dry reverb — small room
     EffectSpec(EffectType.reverb, {'room': 0.35, 'wet': 0.2, 'damp': 0.4}),
   ],
-  rhythm: const RhythmCharacter(RhythmType.pluck, density: 0.75),
+  rhythm: const RhythmCharacter(RhythmType.none), // Phase 2: no stray plucks
   spatial: const SpatialSpec(
     defaultPattern: AntiphonalPattern.alternate,
     defaultIntensity: 0.75,
@@ -1206,7 +1244,7 @@ final desert = SoundWorld(
     ),
   ],
   effects: const [
-    EffectSpec(EffectType.lowpass, {'cutoffHz': 600, 'resonance': 6.0}),
+    EffectSpec(EffectType.lowpass, {'cutoffHz': 600, 'resonance': 6.0}, layer: 'texture'),
     EffectSpec(EffectType.highpass, {'cutoffHz': 40, 'resonance': 0.7}),
     EffectSpec(EffectType.reverb, {'room': 0.5, 'wet': 0.15, 'damp': 0.5}),
     // Short echo — a single distant reflection, not a wall

@@ -4,20 +4,21 @@
 //   → AnalysisPipeline → PercussionAnalyzer → AccompanimentBrain
 //   → SynthCore (Dart) → SoLoud stream
 //
-// Phase 1 scope (spec phase plan): no AEC, feedback suppressor, coupling
-// guard, AutoTrim or MIDI — those arrive in Phases 2/4/5. Use headphones
-// in Phase 1, or the mic will hear the accompaniment.
+// Phase 2: echo cancelling (aec.dart) runs in open-air mode, so the mic
+// can be used with speakers. AutoTrim and MIDI arrive in Phases 4/5.
 
 import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import 'aec.dart';
 import 'analysis.dart';
 import 'brain.dart';
 import 'dsp.dart';
 import 'dsp_profile.dart';
 import 'input_router.dart';
+import 'models.dart';
 import 'percussion.dart';
 import 'state.dart';
 import 'synth.dart';
@@ -33,6 +34,17 @@ class AudioEngine {
 
   double _lastSynthRms = 0.0; // bug #15: previous frame's level
   double _noiseFloor = 0.002; // adaptive input noise floor (linear RMS)
+
+  // ─── Echo cancelling (Phase 2) ───────────────────────────────────
+  EchoCanceller? _aec;
+  int _micCount = 0; // mic samples received
+  double? _clockOffset; // playedFrames − micCount, smoothed
+  static const int _estWindow = 32768; // ~0.74 s
+  static const int _maxLag = 22050; // 500 ms
+  final Float64List _micHist = Float64List(_estWindow);
+  int _micHistPos = 0;
+  int _framesSinceEstimate = 0;
+  bool get aecActive => _aec?.delaySamples != null;
   double _hpPrevX = 0.0, _hpPrevY = 0.0; // bug #21
   List<Biquad> _mains = const [];
 
@@ -130,10 +142,14 @@ class AudioEngine {
       x[i] = softClip(x[i]);
     }
 
+    // Step 3b: echo cancelling (open-air only; Direct = headphones/line).
+    final micLevel = _rms(x);
+    final cleaned = _cancelEcho(x, profile);
+
     // Step 4: noise gate. Track the room's noise floor (falls fast, rises
     // slowly) and gate at the higher of "floor + 10 dB" and the
     // Sensitivity threshold (-24 dBFS at 0 … -60 dBFS at 1).
-    final level = _rms(x);
+    final level = _rms(cleaned);
     if (level < _noiseFloor) {
       _noiseFloor = _noiseFloor * 0.7 + level * 0.3;
     } else {
@@ -144,10 +160,10 @@ class AudioEngine {
     app.gateRms = gate;
 
     // Step 5: confidence from previous frame's output level (§8.4).
-    final conf = _computeAnalysisConfidence(level, profile);
+    final conf = _computeAnalysisConfidence(level, micLevel, profile);
 
     // Step 6: analysis.
-    final frame = analysis.process(x, profile, conf, gateRms: gate);
+    final frame = analysis.process(cleaned, profile, conf, gateRms: gate);
 
     // Step 6: percussion.
     final frameMs = 1000.0 * profile.fftWindow / InputRouter.sampleRate;
@@ -183,7 +199,79 @@ class AudioEngine {
     }
   }
 
-  double _computeAnalysisConfidence(double micLevel, DspProfile profile) {
+  Float64List _cancelEcho(Float64List x, DspProfile profile) {
+    if (app.couplingMode == CouplingMode.direct ||
+        profile.aecTaps <= 0 ||
+        !synth.isInitialized) {
+      _aec = null;
+      return x;
+    }
+    final mobile = defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    final taps = min(profile.aecTaps, mobile ? 512 : 1024);
+    if (_aec == null || _aec!.taps != taps) {
+      final prevDelay = _aec?.delaySamples;
+      _aec = EchoCanceller(taps: taps, stepSize: profile.aecStepSize)
+        ..delaySamples = prevDelay;
+    }
+    final aec = _aec!;
+    final n = x.length;
+
+    // Map mic samples onto the output clock.
+    _micCount += n;
+    final sample = (synth.playedFrames - _micCount).toDouble();
+    final prev = _clockOffset;
+    _clockOffset = (prev == null || (sample - prev).abs() > 8820)
+        ? sample
+        : prev + (sample - prev) * 0.02;
+    final off = _clockOffset!.round();
+
+    // Keep recent mic audio for delay estimation.
+    for (int i = 0; i < n; i++) {
+      _micHist[_micHistPos] = x[i];
+      _micHistPos = (_micHistPos + 1) % _estWindow;
+    }
+    if (++_framesSinceEstimate >= 20 && _micCount >= _estWindow) {
+      _framesSinceEstimate = 0;
+      final mic = Float64List(_estWindow);
+      for (int i = 0; i < _estWindow; i++) {
+        mic[i] = _micHist[(_micHistPos + i) % _estWindow];
+      }
+      final ref = synth.core.referenceAt(
+          _micCount - _estWindow + off - _maxLag, _estWindow + _maxLag);
+      aec.estimateDelay(mic, ref, _maxLag);
+    }
+
+    final d = aec.delaySamples;
+    if (d == null) return x;
+    final from = (_micCount - n) + off - d + aec.preTaps - (aec.taps - 1);
+    final ref = synth.core.referenceAt(from, n + aec.taps - 1);
+    final out = aec.process(x, ref);
+    app.updateAec(aec.erleDb);
+    return out;
+  }
+
+  double _computeAnalysisConfidence(
+      double level, double micLevel, DspProfile profile) {
+    // Headphones / line input: the mic can't hear the synth.
+    if (app.couplingMode == CouplingMode.direct) {
+      return profile.analysisConfidenceMultiplier;
+    }
+    final aec = _aec;
+    if (aec != null && aec.delaySamples != null) {
+      // Compare what's left with the echo that's left after cancelling.
+      final residualEcho =
+          aec.lastEchoRms * pow(10, -aec.erleDb / 20).toDouble();
+      if (residualEcho < 1e-4) return profile.analysisConfidenceMultiplier;
+      final r = level / residualEcho;
+      if (r > 3.0) return profile.analysisConfidenceMultiplier;
+      if (r > 1.0) {
+        return ((0.4 + (r - 1) * 0.3) * profile.analysisConfidenceMultiplier)
+            .clamp(0.0, 1.0);
+      }
+      return (0.15 * profile.analysisConfidenceMultiplier).clamp(0.0, 1.0);
+    }
+    // No AEC lock yet: fall back to output-level heuristic (§8.4).
     if (_lastSynthRms < 0.05) return profile.analysisConfidenceMultiplier;
     final ratio = micLevel / _lastSynthRms;
     if (ratio > 2.0) return profile.analysisConfidenceMultiplier;
@@ -219,6 +307,51 @@ class AudioEngine {
 
   void _showWarningChip(String msg) {
     if (!_warningsCtrl.isClosed) _warningsCtrl.add(msg);
+  }
+
+  // ─── App lifecycle (Phase 2 fix: unstable when switching apps) ────
+
+  bool _suspended = false;
+  Future<void> _lifecycle = Future.value();
+
+  /// App hidden (mobile): release the mic and pause output.
+  void suspend() {
+    _lifecycle = _lifecycle.then((_) async {
+      if (!_started || _suspended) return;
+      _suspended = true;
+      synth.pause();
+      try {
+        await input.stop();
+      } catch (e) {
+        debugPrint('AudioEngine: mic stop failed: $e');
+      }
+    });
+  }
+
+  /// App visible again: resume output and reopen the mic.
+  void resume() {
+    _lifecycle = _lifecycle.then((_) async {
+      if (!_started || !_suspended) return;
+      _suspended = false;
+      synth.resume();
+      try {
+        final saved = app.selectedInputDeviceId;
+        InputDeviceInfo? dev;
+        if (saved != null) {
+          for (final d in await input.listDevices()) {
+            if (d.id == saved) dev = d;
+          }
+        }
+        if (dev != null) {
+          await input.selectDevice(dev.raw);
+        } else {
+          await input.start();
+        }
+      } catch (e) {
+        debugPrint('AudioEngine: mic restart failed: $e');
+        _showWarningChip('Microphone did not restart — reopen the app.');
+      }
+    });
   }
 
   /// UI: pick an input device (null = system default).
