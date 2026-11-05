@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -105,3 +108,27 @@ jobs:
         with:
           name: Sympatheia-android
           path: build/app/outputs/flutter-apk/app-release.apk
+
+  release:
+    needs: [windows, android]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          cd dist
+          cp Sympatheia-android/app-release.apk Sympatheia.apk
+          (cd Sympatheia-windows && zip -qr ../Sympatheia-windows.zip .)
+          gh release delete latest -R "$REPO" -y --cleanup-tag || true
+          gh release create latest -R "$REPO" \
+            --title "Sympatheia (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7}. Android: tap Sympatheia.apk. Windows: download the zip, unzip, run sympatheia.exe." \
+            --target "$GITHUB_SHA" \
+            Sympatheia.apk Sympatheia-windows.zip
