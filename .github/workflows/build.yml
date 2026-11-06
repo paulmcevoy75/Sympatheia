@@ -57,6 +57,7 @@ jobs:
       - name: Upload app
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 3
           name: Sympatheia-windows
           path: build/windows/x64/runner/Release/
 
@@ -64,6 +65,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 3
           name: logs
           path: |
             analyze.txt
@@ -106,6 +108,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 3
           name: Sympatheia-android
           path: build/app/outputs/flutter-apk/app-release.apk
 
