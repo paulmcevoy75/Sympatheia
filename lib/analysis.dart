@@ -225,10 +225,12 @@ class AnalysisPipeline {
       }
     }
     // Slow average for key detection (~3 s): keys are a long-term
-    // property, chords change every beat or two.
+    // property, chords change every beat or two. The coefficient is
+    // scaled by frame length so 4096-sample frames keep the same ~3 s.
     if (norm > 1e-6) {
+      final a = 1 - pow(0.985, n / 2048.0).toDouble();
       for (int i = 0; i < 12; i++) {
-        _keyChroma[i] = _keyChroma[i] * 0.985 + c[i] * 0.015;
+        _keyChroma[i] = _keyChroma[i] * (1 - a) + c[i] * a;
       }
     }
     return List<double>.generate(12, (i) => c[i], growable: false);

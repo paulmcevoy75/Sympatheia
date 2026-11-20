@@ -87,3 +87,26 @@ engine + MIDI (Phase 4), native plugin (v1.1).
   mic signal, so there is no howl loop to suppress.
 * **App lifecycle**: on Android/iOS the output pauses and the mic is
   released when the app is hidden, and both resume on return.
+
+## Review fixes (Nov 20, 2026)
+
+* **Harmonizer**: one harmony note per played note (it re-plucked on
+  every analysis frame, ~21×/s), and diatonic intervals use the key in
+  use (detected / manual / progression), not always the manual key.
+* **Rhythm phase lock**: once beat-locked, the synth's bar clock follows
+  `PercussionAnalyzer.barPosition` (beat-in-bar + PLL phase), adjusted
+  for the synth's render-ahead. First lock jumps forward; small errors
+  are pulled in at up to ±8 % tempo. Input/output driver latency is not
+  compensated yet (Phase 5 AutoTrim). Bars are counted in beats, and the
+  pattern learner uses the same position, so learned steps and played
+  steps agree.
+* **Pattern learner** counts every onset (short refractory time) — a hit
+  on the same step every bar used to be counted once.
+* **Pending modulation** is cancelled when the player plays notes in the
+  old key that are not in the pending one.
+* **Frame timing**: Tonal and the key-chroma average are set in ms, so the
+  whisper profile's 4096-sample frames no longer double every delay.
+* **Noise gate**: the floor rises fast only on frames below the gate; it
+  no longer climbs during long continuous playing.
+* **AEC** resets on a Speakers/Headphones change.
+* **UI**: live readouts refresh at most ~15×/s (was every mic frame).

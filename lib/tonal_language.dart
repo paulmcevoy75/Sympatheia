@@ -39,14 +39,28 @@ class TonalLanguage implements HarmonicLanguage {
 
   // ─── Persisted state ───────────────────────────────────────────
 
+  // ─── Frame timing ──────────────────────────────────────────────
+  // FIX: counts and smoothing used to assume 46 ms frames; the quietest
+  // profile (whisper) uses 4096-sample frames (93 ms), which doubled
+  // every delay. Everything below is now set in milliseconds.
+  static const double _refFrameMs = 1000.0 * 2048 / 44100; // 46.4 ms
+  double _frameMsFor(AppState app) =>
+      1000.0 * (app.currentProfile?.fftWindow ?? 2048) / 44100;
+  int _framesFor(AppState app, double ms) =>
+      max(1, (ms / _frameMsFor(app)).round());
+  /// Per-frame smoothing coefficient that gives the same time constant
+  /// as [alphaAt46ms] does at 46 ms frames.
+  double _alphaFor(AppState app, double alphaAt46ms) =>
+      1 - pow(1 - alphaAt46ms, _frameMsFor(app) / _refFrameMs).toDouble();
+
   // Key detection smoothing. Requires N consecutive same-key
   // observations before committing to a change.
   final List<_KeyObservation> _keyHistory = [];
-  static const int _keyHistoryCap = 80;
-  // Frames of agreement needed before a key change commits. Scales
-  // with Sensitivity: ~60 frames (~3 s) at 0, ~15 (~0.7 s) at 1.
+  static const int _keyHistoryCap = 160;
+  // Agreement needed before a key change commits. Scales with
+  // Sensitivity: ~2.8 s at 0, ~0.7 s at 1.
   int _stableObservationsFor(AppState app) =>
-      (60 - 45 * app.sensitivity.clamp(0.0, 1.0)).round();
+      _framesFor(app, 2785 - 2090 * app.sensitivity.clamp(0.0, 1.0));
   static const double _minKeyScore = 0.55;
 
   // Current committed key — drives the pad/bass chord. May differ
@@ -64,9 +78,13 @@ class TonalLanguage implements HarmonicLanguage {
   List<int> _lastVoicing = const [];
 
   // Pending modulation set by handleOutOfContextNote. Commits in
-  // update() once it's been pending for > 1000 ms.
+  // update() once it's been pending for > 2000 ms, unless the player
+  // goes back to the old key first (see _checkPendingCancel).
   (int, Scale)? _pendingModulation;
   DateTime? _pendingModulationAt;
+  int _pendingCancelFrames = 0;
+  static const int _pendingCommitMs = 2000;
+  static const double _pendingCancelMs = 140;
 
   // ─── Chord scheduler ───────────────────────────────────────────
   // The accompaniment plays its own diatonic progression: each chord
@@ -130,6 +148,7 @@ class TonalLanguage implements HarmonicLanguage {
     _lastVoicing = const [];
     _pendingModulation = null;
     _pendingModulationAt = null;
+    _pendingCancelFrames = 0;
     _committedKeyPc = app.manualKeyPc;
     _committedScale = app.manualScale;
     _committedAt = DateTime.now();
@@ -177,10 +196,12 @@ class TonalLanguage implements HarmonicLanguage {
       working = _checkAccidentals(frame, app, working);
     }
 
-    // 3. Commit pending modulation if it's been pending > 1 s.
+    // 3. Commit pending modulation if it's been pending > 2 s and the
+    // player hasn't gone back to the old key meanwhile.
+    _checkPendingCancel(frame, app);
     if (_pendingModulation != null && _pendingModulationAt != null) {
       final elapsed = DateTime.now().difference(_pendingModulationAt!);
-      if (elapsed.inMilliseconds > 2000) {
+      if (elapsed.inMilliseconds > _pendingCommitMs) {
         _committedKeyPc = _pendingModulation!.$1;
         _committedScale = _pendingModulation!.$2;
         _committedAt = DateTime.now();
@@ -213,10 +234,13 @@ class TonalLanguage implements HarmonicLanguage {
     // 7. Tonal stability from frame key detection confidence.
     final stability = _computeTonalStability(frame, working);
 
+    // FIX: report the key actually in use. In Listen/Harmonize this is
+    // the committed key; in Manual/Progression the committed key is never
+    // updated, so the brain (and the harmonizer) saw a stale key.
     return HarmonicContext(
       data: {
-        'committedKeyPc': _committedKeyPc,
-        'committedScaleName': _committedScale.name,
+        'committedKeyPc': working.$1,
+        'committedScaleName': working.$2.name,
       },
       currentChord: chord,
       padPitchesMidi: padPitches,
@@ -253,11 +277,12 @@ class TonalLanguage implements HarmonicLanguage {
         if (_pendingModulation != alternate) {
           _pendingModulation = alternate;
           _pendingModulationAt = DateTime.now();
+          _pendingCancelFrames = 0;
         }
       }
-      // During 350–1500 ms, always reduce reported stability so the
-      // brain shows "modulating" in the status pill. The actual
-      // modulation commits in update() once pending > 1 s.
+      // While pending, reduce reported stability so the brain shows
+      // "modulating" in the status pill. The actual modulation commits
+      // in update() once pending > 2 s.
       return current.copyWith(
         tonalStability: max(0.2, current.tonalStability * 0.6),
       );
@@ -269,6 +294,30 @@ class TonalLanguage implements HarmonicLanguage {
     return current.copyWith(
       tonalStability: 0.15,
     );
+  }
+
+  /// FIX: a pending modulation used to commit 2 s later no matter what.
+  /// Cancel it when the player plays notes that belong to the current
+  /// key but not to the pending one (e.g. back to F natural after a
+  /// held F# in C major), for ~140 ms.
+  void _checkPendingCancel(AnalysisFrame frame, AppState app) {
+    final pending = _pendingModulation;
+    if (pending == null) return;
+    final hz = frame.pitchHz;
+    if (hz == null || frame.pitchConfidence < 0.6) return; // rests don't cancel
+    final pc = pitchClassFromHz(hz);
+    if (pc == null) return;
+    final inOld = _committedScale.contains(_committedKeyPc, pc);
+    final inNew = pending.$2.contains(pending.$1, pc);
+    if (inOld && !inNew) {
+      if (++_pendingCancelFrames >= _framesFor(app, _pendingCancelMs)) {
+        _pendingModulation = null;
+        _pendingModulationAt = null;
+        _pendingCancelFrames = 0;
+      }
+    } else {
+      _pendingCancelFrames = 0;
+    }
   }
 
   // ─── Internal: key resolution ──────────────────────────────────
@@ -339,8 +388,9 @@ class TonalLanguage implements HarmonicLanguage {
   (int, Scale) _checkAccidentals(
       AnalysisFrame frame, AppState app, (int, Scale) working) {
     if (frame.silent) return working;
+    final a = _alphaFor(app, 0.06);
     for (int i = 0; i < 12; i++) {
-      _fastChroma[i] = _fastChroma[i] * 0.94 + frame.chroma[i] * 0.06;
+      _fastChroma[i] = _fastChroma[i] * (1 - a) + frame.chroma[i] * a;
     }
     final total = _fastChroma.fold(0.0, (a, b) => a + b);
     if (total < 1e-6) return working;
@@ -392,8 +442,8 @@ class TonalLanguage implements HarmonicLanguage {
       _accidentalFrames = 1;
     }
 
-    // ~1.4 s at Follow 0, ~0.7 s at Follow 1 (46 ms frames).
-    final needed = (30 - 15 * app.follow.clamp(0.0, 1.0)).round();
+    // ~1.4 s at Follow 0, ~0.7 s at Follow 1.
+    final needed = _framesFor(app, 1393 - 696 * app.follow.clamp(0.0, 1.0));
     if (_accidentalFrames >= needed) {
       _keyLockFrom = (_committedKeyPc, _committedScale.name);
       _committedKeyPc = best.$1;
@@ -486,14 +536,16 @@ class TonalLanguage implements HarmonicLanguage {
 
     // Average what the player plays while this chord is held.
     if (!frame.silent) {
+      final a = _alphaFor(app, 0.03);
       for (int i = 0; i < 12; i++) {
-        _heldChroma[i] = _heldChroma[i] * 0.97 + frame.chroma[i] * 0.03;
+        _heldChroma[i] = _heldChroma[i] * (1 - a) + frame.chroma[i] * a;
       }
     }
 
     // During silence the progression pauses rather than wandering.
     if (frame.silent) {
-      _chordUntil = _chordUntil?.add(const Duration(milliseconds: 46));
+      _chordUntil = _chordUntil
+          ?.add(Duration(microseconds: (_frameMsFor(app) * 1000).round()));
       return _chord!;
     }
     if (_chordUntil != null && now.isBefore(_chordUntil!)) return _chord!;

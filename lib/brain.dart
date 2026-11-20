@@ -76,15 +76,27 @@ class AccompanimentBrain {
 
     final world = worldById(app.soundWorldId);
 
+    final keyPc = (context.data['committedKeyPc'] as int?) ??
+        (context.padPitchesMidi.isNotEmpty
+            ? context.padPitchesMidi.first % 12
+            : app.manualKeyPc);
+    final scaleName = context.data['committedScaleName'] as String?;
+    final scale = scaleName == null
+        ? app.manualScale
+        : kAllScales.firstWhere((s) => s.name == scaleName,
+            orElse: () => app.manualScale);
+
     // 2. Rhythm schedule
     final rhythmHits = world.rhythm.type == RhythmType.none
         ? const <RhythmHit>[]
         : _buildRhythmSchedule(frame, app, context, percussion,
             world.rhythm.density);
 
-    // 3. Harmony schedule (only for harmonizer world)
+    // 3. Harmony schedule (only for harmonizer world). Intervals are
+    // worked out in the key the language is actually using (FIX: was
+    // always the manual key, even while following the player).
     final harmonyEvents = app.soundWorldId == 'parallel_chords'
-        ? _buildHarmonySchedule(frame, app, context, percussion)
+        ? _buildHarmonySchedule(frame, app, context, percussion, keyPc, scale)
         : const <HarmonyEvent>[];
 
     // 4. Textures
@@ -95,16 +107,6 @@ class AccompanimentBrain {
 
     // 6. Track recent notes for harmonizer prediction
     _recordNoteIfPresent(frame);
-
-    final keyPc = (context.data['committedKeyPc'] as int?) ??
-        (context.padPitchesMidi.isNotEmpty
-            ? context.padPitchesMidi.first % 12
-            : app.manualKeyPc);
-    final scaleName = context.data['committedScaleName'] as String?;
-    final scale = scaleName == null
-        ? app.manualScale
-        : kAllScales.firstWhere((s) => s.name == scaleName,
-            orElse: () => app.manualScale);
 
     // 7. Compose
     return MusicalState(
@@ -280,6 +282,8 @@ class AccompanimentBrain {
     AppState app,
     HarmonicContext ctx,
     PercussionAnalyzer percussion,
+    int keyPc,
+    Scale scale,
   ) {
     _updateHarmonizability(frame, app);
     final mode = _selectHarmonizerMode(frame, app, percussion.beatLocked);
@@ -288,6 +292,13 @@ class AccompanimentBrain {
     // the actual crossfade by observing the mode change on the state.
     _lastHarmonizerMode = mode;
 
+    // FIX: the brain runs every analysis frame (~21/s). Emit a harmony
+    // note only when the player starts a new note — not on every frame
+    // the same note is held, which re-plucked the harmony voice ~21×/s.
+    if (!_isNewHarmonyNote(frame)) return const [];
+
+    _harmonyKeyPc = keyPc;
+    _harmonyScale = scale;
     switch (mode) {
       case HarmonizerMode.predictive:
         return _schedulePredictive(frame, app);
@@ -300,6 +311,40 @@ class AccompanimentBrain {
       case HarmonizerMode.aestheticSilence:
         return const [];
     }
+  }
+
+  // Note-start detection for the harmonizer.
+  int? _harmonyLastPc;
+  DateTime _harmonyLastAt = DateTime(2000); // last harmony note sent
+  DateTime _harmonyLastSeen = DateTime(2000); // last frame with that pitch
+  static const int _harmonyRetriggerMs = 150;
+  static const int _harmonyGapMs = 220; // a gap this long ends the note
+  int _harmonyKeyPc = 0;
+  Scale _harmonyScale = kMajor;
+
+  /// True on the first frame of a new note: a different pitch class, the
+  /// same pitch after a gap, or the same pitch re-struck (a clear onset,
+  /// not too soon after the last). A single frame where pitch tracking
+  /// drops out does not count as a new note.
+  bool _isNewHarmonyNote(AnalysisFrame frame) {
+    final hz = frame.pitchHz;
+    final pc = (hz == null || frame.pitchConfidence < 0.6)
+        ? null
+        : pitchClassFromHz(hz);
+    if (pc == null) return false;
+    final now = frame.timestamp;
+    final gapMs = now.difference(_harmonyLastSeen).inMilliseconds;
+    final sinceMs = now.difference(_harmonyLastAt).inMilliseconds;
+    _harmonyLastSeen = now;
+    final restruck =
+        frame.percussiveOnset > PercussionAnalyzer.strongOnsetThreshold &&
+            sinceMs >= _harmonyRetriggerMs;
+    if (pc != _harmonyLastPc || gapMs > _harmonyGapMs || restruck) {
+      _harmonyLastPc = pc;
+      _harmonyLastAt = now;
+      return true;
+    }
+    return false;
   }
 
   void _updateHarmonizability(AnalysisFrame frame, AppState app) {
@@ -449,7 +494,7 @@ class AccompanimentBrain {
     ];
   }
 
-  /// Harmony interval → pitch class, respecting the manual scale for
+  /// Harmony interval → pitch class, respecting the current scale for
   /// diatonic intervals, and using fixed semitones for parallel ones.
   int _harmonyIntervalPc(int pc, HarmonyInterval interval, AppState app) {
     switch (interval) {
@@ -471,8 +516,10 @@ class AccompanimentBrain {
   }
 
   int _diatonicStep(int pc, int steps, AppState app, {required int fallbackSemis}) {
-    final intervals = app.manualScale.intervals;
-    final rootPc = app.manualKeyPc;
+    // The key in use (detected, manual or progression), set per note by
+    // _buildHarmonySchedule.
+    final intervals = _harmonyScale.intervals;
+    final rootPc = _harmonyKeyPc;
     // Convert to scale-degree index
     final relPc = (pc - rootPc + 12) % 12;
     final idx = intervals.indexOf(relPc);

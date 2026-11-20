@@ -149,11 +149,22 @@ class AudioEngine {
     // Step 4: noise gate. Track the room's noise floor (falls fast, rises
     // slowly) and gate at the higher of "floor + 10 dB" and the
     // Sensitivity threshold (-24 dBFS at 0 … -60 dBFS at 1).
+    // FIX: the floor used to rise ~4 %/s whenever the level was above it,
+    // including while the player was playing, so after ~75 s with no
+    // quiet gap the gate reached ~-16 dBFS and shut the player out. Now
+    // it rises at that rate only on frames that look like room noise
+    // (below the gate); above the gate it creeps 20× slower (~+5 dB after
+    // 5 min of non-stop playing), so a loud noise source that switches on
+    // (a fan) is still learned eventually (~10 min for 10 dB over the gate).
     final level = _rms(cleaned);
+    final frameSec = profile.fftWindow / InputRouter.sampleRate;
+    final oldGate = _noiseFloor * 3.2;
     if (level < _noiseFloor) {
       _noiseFloor = _noiseFloor * 0.7 + level * 0.3;
     } else {
-      _noiseFloor = min(_noiseFloor * 1.002, 0.05);
+      final ratePerSec = level < oldGate ? 0.04 : 0.002;
+      _noiseFloor =
+          min(_noiseFloor * pow(1 + ratePerSec, frameSec).toDouble(), 0.05);
     }
     final threshDb = -24.0 - 36.0 * app.sensitivity;
     final gate = max(pow(10, threshDb / 20).toDouble(), _noiseFloor * 3.2);
@@ -182,6 +193,8 @@ class AudioEngine {
       reverb: app.reverb,
       spatial: app.antiphonalIntensity,
       bpm: app.tempoFollow ? (percussion.tempoBpm ?? frame.tempoBpm) : null,
+      // Line the rhythm up with the player's beat once locked.
+      barPosition: app.tempoFollow ? percussion.barPosition : null,
     );
 
     // Step 9: reference level for the next frame's confidence.
@@ -199,7 +212,29 @@ class AudioEngine {
     }
   }
 
+  DateTime? _seenCouplingChange;
+
+  /// Forget everything the echo canceller has learned: delay, filter,
+  /// clock mapping and mic history.
+  void _resetAec() {
+    _aec = null;
+    _clockOffset = null;
+    _micCount = 0;
+    _micHist.fillRange(0, _micHist.length, 0);
+    _micHistPos = 0;
+    _framesSinceEstimate = 0;
+  }
+
   Float64List _cancelEcho(Float64List x, DspProfile profile) {
+    // FIX: switching Speakers/Headphones (or an auto-suggested switch on
+    // a device change) now starts the echo canceller from scratch, as
+    // AppState's comments promise; before, stale mic history and the old
+    // delay carried over.
+    final changed = app.couplingModeChangedAt;
+    if (changed != _seenCouplingChange) {
+      _seenCouplingChange = changed;
+      _resetAec();
+    }
     if (app.couplingMode == CouplingMode.direct ||
         profile.aecTaps <= 0 ||
         !synth.isInitialized) {

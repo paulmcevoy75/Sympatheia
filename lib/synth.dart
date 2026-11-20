@@ -146,9 +146,15 @@ class SoloudSynthEngine {
     required double reverb,
     required double spatial,
     double? bpm,
+    double? barPosition,
   }) {
     core.apply(state, profile,
-        master: master, reverb: reverb, spatial: spatial, bpm: bpm);
+        master: master,
+        reverb: reverb,
+        spatial: spatial,
+        bpm: bpm,
+        barPosition: barPosition,
+        leadFrames: core.renderedFrames - playedFrames);
   }
 
   void applyMasterTrim(double linear) => core.setMasterTrim(linear);

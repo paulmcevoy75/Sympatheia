@@ -29,6 +29,7 @@ class PercussionAnalyzer {
 
   // ─── Bar / lock tracking ───────────────────────────────────────
   DateTime? _lastBarStart;
+  int _beatInBar = 0; // 0..3, counted from the first beat boundary
   int _barsLocked = 0;
   static const int _barsRequiredForLock = 2;
 
@@ -44,7 +45,7 @@ class PercussionAnalyzer {
   static const int _patternDecayMs = 2000;
   static const double _patternDecayFactor = 0.85;
   static const double _patternOnsetConfidenceThreshold = 0.55;
-  int _lastPatternStep = -1;
+  DateTime? _lastPatternOnset;
 
   // ─── Lock timeout ──────────────────────────────────────────────
   DateTime _lastStrongOnset = DateTime.now();
@@ -60,6 +61,13 @@ class PercussionAnalyzer {
 
   double? get beatPhase01 =>
       (_bpm != null && _beatPeriodMs > 0) ? _beatPhase : null;
+
+  /// Position in the 4-beat bar (0 ≤ x < 4) at the last update, in the
+  /// same bar the 16-step pattern is learned against. Null until beat
+  /// locked. The synth uses it to line its rhythm clock up with the
+  /// player (16-step index = barPosition × 4).
+  double? get barPosition =>
+      (beatLocked && _beatPeriodMs > 0) ? _beatInBar + _beatPhase : null;
 
   List<double> get rhythmPattern {
     if (!beatLocked) return const <double>[];
@@ -137,10 +145,13 @@ class PercussionAnalyzer {
     _beatCount++;
     if (_lastBarStart == null) {
       _lastBarStart = now; // bug #28
+      _beatInBar = 0;
       return;
     }
-    final barMs = _beatPeriodMs * 4;
-    if (now.difference(_lastBarStart!).inMicroseconds / 1000.0 >= barMs - 1) {
+    // Count bars in beats, not wall time: boundaries are only seen once
+    // per analysis frame, so timestamps jitter by up to a frame.
+    _beatInBar = (_beatInBar + 1) % 4;
+    if (_beatInBar == 0) {
       _lastBarStart = now;
       _barsLocked++;
     }
@@ -208,12 +219,20 @@ class PercussionAnalyzer {
     if (_lastBarStart == null || _bpm == null) return;
 
     final sixteenthMs = _beatPeriodMs / 4.0;
-    final elapsedMs = now.difference(_lastBarStart!).inMicroseconds / 1000.0;
-    final step = ((elapsedMs / sixteenthMs).round() % _patternSteps +
-            _patternSteps) %
-        _patternSteps;
-    if (step == _lastPatternStep) return; // one count per onset
-    _lastPatternStep = step;
+    // One count per onset. FIX: this used to skip any onset on the same
+    // step as the previous one, so a hit repeated on the same step every
+    // bar (e.g. beat 1 only) was counted once and then decayed away. An
+    // onset spans one or two frames, so use a short refractory time.
+    final last = _lastPatternOnset;
+    final refractoryMs = max(_frameMs * 1.5, sixteenthMs * 0.6);
+    if (last != null &&
+        now.difference(last).inMicroseconds / 1000.0 < refractoryMs) {
+      return;
+    }
+    _lastPatternOnset = now;
+    // Same bar position the synth locks to (see barPosition).
+    final pos = _beatInBar + _beatPhase;
+    final step = (pos * 4).round() % _patternSteps;
 
     _pattern[step] = (_pattern[step] + 1.0).clamp(0.0, 8.0);
     double mx = 0.0;
@@ -256,7 +275,8 @@ class PercussionAnalyzer {
     }
     _phaseErrorMsSum = 0;
     _phaseErrorCount = 0;
-    _lastPatternStep = -1;
+    _lastPatternOnset = null;
+    _beatInBar = 0;
   }
 
   void reset() {

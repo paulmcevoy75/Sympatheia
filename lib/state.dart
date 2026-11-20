@@ -152,21 +152,53 @@ class AppState extends ChangeNotifier {
 
   // ─── Engine → UI updates ─────────────────────────────────────────
 
+  // FIX: these run on every mic frame (3 calls per frame, ~21 frames/s)
+  // and each rebuilt the whole screen. Live readouts now refresh the UI
+  // at most ~15 times a second; a trailing timer makes sure the latest
+  // values are always shown.
+  static const Duration _liveInterval = Duration(milliseconds: 66);
+  DateTime _lastLiveNotify = DateTime(2000);
+  Timer? _liveTimer;
+
+  void _notifyLive() {
+    final now = DateTime.now();
+    final since = now.difference(_lastLiveNotify);
+    if (since >= _liveInterval) {
+      _liveTimer?.cancel();
+      _liveTimer = null;
+      _lastLiveNotify = now;
+      notifyListeners();
+    } else {
+      _liveTimer ??= Timer(_liveInterval - since, () {
+        _liveTimer = null;
+        _lastLiveNotify = DateTime.now();
+        notifyListeners();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _liveTimer?.cancel();
+    _saveTimer?.cancel();
+    super.dispose();
+  }
+
   void updateFromAnalysis(AnalysisFrame f) {
     latestFrame = f;
-    notifyListeners();
+    _notifyLive();
   }
 
   void updateFromBrain(MusicalState s, BrainStatus st, DspProfile? p) {
     latestState = s;
     status = st;
     currentProfile = p;
-    notifyListeners();
+    _notifyLive();
   }
 
   void updateAec(double erle) {
     aecErleDb = erle;
-    notifyListeners();
+    _notifyLive();
   }
 
   // ─── Tier selection (called every frame by AudioEngine) ──────────

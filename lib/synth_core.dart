@@ -530,6 +530,10 @@ class SynthCore {
   // Rhythm clock
   double _bpm = 90;
   double _beatPos = 0; // beats since clock start, continuous
+  // Phase lock to the player (FIX: the clock used to free-run, so hits
+  // were at the right tempo but at an arbitrary place in the bar).
+  double _phaseErr = 0; // beats still to correct, + = clock is behind
+  static const double _maxRateNudge = 0.08; // ±8 % tempo while correcting
   List<RhythmHit> _rhythm = const [];
   int _pingPong = 0;
 
@@ -573,6 +577,8 @@ class SynthCore {
     required double reverb,
     required double spatial,
     double? bpm,
+    double? barPosition,
+    int leadFrames = 0,
   }) {
     _state = state;
     _profile = profile;
@@ -580,6 +586,11 @@ class SynthCore {
     _reverbScale = (reverb / 0.45).clamp(0.0, 2.0);
     _spatial = spatial;
     if (bpm != null && bpm >= 40 && bpm <= 200) _bpm = bpm;
+    if (barPosition != null) {
+      _lockPhase(barPosition, leadFrames);
+    } else {
+      _phaseErr = 0;
+    }
 
     if (_worldId != state.worldId) _switchWorld(state.worldId);
     _updateSustainedVoices(state);
@@ -922,8 +933,33 @@ class SynthCore {
     _event(NoteEventType.on, 'rhythm', note, vel);
   }
 
+  /// [barPosition] is where the player is in the bar now; the next
+  /// sample we render is heard [leadFrames] later. Big errors (first
+  /// lock) jump forward to the right place — jumping forward only skips
+  /// hits, never repeats them. Small errors are pulled in by running the
+  /// clock up to ±8 % fast or slow.
+  void _lockPhase(double barPosition, int leadFrames) {
+    final lead = max(0, leadFrames) / kSampleRate * _bpm / 60.0;
+    final target = (barPosition + lead) % 4.0;
+    var err = target - (_beatPos % 4.0);
+    if (err > 2) err -= 4;
+    if (err <= -2) err += 4;
+    if (err.abs() > 0.25) {
+      _beatPos += err > 0 ? err : err + 4; // forward only
+      _phaseErr = 0;
+    } else {
+      _phaseErr = err;
+    }
+  }
+
   void _advanceRhythm(int n) {
-    final beatsPerSample = _bpm / 60.0 / kSampleRate;
+    var beatsPerSample = _bpm / 60.0 / kSampleRate;
+    if (_phaseErr != 0) {
+      final base = beatsPerSample * n;
+      final nudge = (_phaseErr / base).clamp(-_maxRateNudge, _maxRateNudge);
+      beatsPerSample *= 1 + nudge;
+      _phaseErr -= base * nudge;
+    }
     final start = _beatPos;
     final end = start + beatsPerSample * n;
     if (_rhythm.isNotEmpty) {
